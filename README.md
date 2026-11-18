@@ -4,7 +4,7 @@ DevDisk is a native macOS app for reclaiming space on a developer’s disk. The 
 
 A secondary **Explore** view is a squarified treemap and a size-sorted outline, for drilling into anything the rules do not name. It follows the same idea as [Disk Inventory X](https://github.com/diskinv/diskinv) (scan a folder, show a treemap, an outline, and a kind breakdown). The layout algorithm is an independent implementation of Bruls, Huizing, and van Wijk’s squarified treemaps. None of Disk Inventory X’s GPL code is copied. This project is MIT licensed.
 
-Requires Apple Silicon. `Package.swift` sets the SwiftPM deployment target to macOS 14 so Observation (`@Observable`, `@Bindable`) is available; `App/Info.plist` still requires macOS 26 to launch. The scanning, accounting, rule engine, and treemap layout live in the `DevDiskCore` library, which builds and tests on Linux and macOS. The SwiftUI app is macOS-only. Apple platforms in the manifest are ignored on Linux.
+Requires Apple Silicon and macOS 14 or later (the same deployment target as `Package.swift` and `App/Info.plist`). The scanning, accounting, rule engine, and treemap layout live in the `DevDiskCore` library, which builds and tests on Linux and macOS. The SwiftUI app is macOS-only. Apple platforms in the manifest are ignored on Linux.
 
 ## Screens
 
@@ -22,7 +22,7 @@ make app           # macOS only: dist/DevDisk.app, ad-hoc signed
 open dist/DevDisk.app
 ```
 
-`make test` runs `swift test`. On macOS it also builds the `DevDisk` product, so the app target is type-checked even when test discovery only depends on the library. `make app` uses Swift Command Line Tools (`swift build -c release --product DevDisk --arch arm64`), copies `App/Info.plist`, and runs `codesign --force --deep -s -`. No Xcode project is required. GitHub Actions runs the tests on Ubuntu and builds the app on macOS.
+`make test` runs `swift test`. On macOS it also builds the `DevDisk` product, so the app target is type-checked even when test discovery only depends on the library. `make app` runs `swift build -c release --product DevDisk`, copies `.build/release/DevDisk` into `dist/DevDisk.app`, writes `Contents/PkgInfo`, and runs `codesign --force --deep -s -`. No Xcode project is required. GitHub Actions runs the tests on Ubuntu and builds the app on macOS.
 
 Scan your home folder for the full catalogue. A smaller folder only matches rules whose paths sit inside it.
 
