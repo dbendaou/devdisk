@@ -383,8 +383,13 @@ final class AppModel {
         }
         let flag = CancelFlag()
         cancelFlags[suggestion.id] = flag
-        var performer = MacCleanupPerformer()
-        performer.isCancelled = { flag.isCancelled }
+        // Build the performer before the detached task. A mutable local captured
+        // by Task.detached is a sending capture of main-actor state.
+        let performer: MacCleanupPerformer = {
+            var performer = MacCleanupPerformer()
+            performer.isCancelled = { flag.isCancelled }
+            return performer
+        }()
         let id = suggestion.id
         let (stream, continuation) = AsyncStream.makeStream(of: UInt64.self)
         Task {
