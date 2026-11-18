@@ -11,8 +11,14 @@ jobs:
     container: swift:6.4.2
     steps:
       - uses: actions/checkout@v4
+      # The swift image runs as root, which ignores chmod 000, so the
+      # permission-error test needs an unprivileged user.
+      - name: Create an unprivileged user
+        run: |
+          useradd --create-home builder
+          chown -R builder "$GITHUB_WORKSPACE"
       - name: Build and test
-        run: swift test
+        run: su builder -c "cd '$GITHUB_WORKSPACE' && swift test"
 
   app:
     name: Build app (macOS)
