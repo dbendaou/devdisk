@@ -34,7 +34,25 @@ struct MacCleanupPerformer: CleanupPerforming {
     }
 
     func removePermanently(path: String) throws {
-        try FileManager.default.removeItem(at: URL(fileURLWithPath: path))
+        let source = URL(fileURLWithPath: path)
+        // A retry after a partial delete should continue with the paths that remain.
+        guard FileManager.default.fileExists(atPath: source.path) else { return }
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DevDisk-\(UUID().uuidString)", isDirectory: true)
+        // Same-volume rename returns immediately so the scan no longer sees the path.
+        // The bytes are freed when the renamed copy is removed, still off the main thread.
+        do {
+            try FileManager.default.moveItem(at: source, to: destination)
+            try FileManager.default.removeItem(at: destination)
+        } catch {
+            if FileManager.default.fileExists(atPath: source.path) {
+                try FileManager.default.removeItem(at: source)
+            } else if FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+            } else {
+                throw error
+            }
+        }
     }
 
     func run(executable: String, arguments: [String]) throws -> String {

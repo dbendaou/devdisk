@@ -84,6 +84,8 @@ public struct ConfirmationCopy: Sendable, Equatable {
     public var totalBytes: UInt64
     public var dryRun: Bool
     public var safety: SafetyLevel
+    /// Review deletes need a second explicit acknowledgement in the sheet.
+    public var requiresExtraAcknowledgement: Bool
 
     public init(
         title: String,
@@ -92,7 +94,8 @@ public struct ConfirmationCopy: Sendable, Equatable {
         paths: [String],
         totalBytes: UInt64,
         dryRun: Bool,
-        safety: SafetyLevel
+        safety: SafetyLevel,
+        requiresExtraAcknowledgement: Bool = false
     ) {
         self.title = title
         self.detail = detail
@@ -101,16 +104,19 @@ public struct ConfirmationCopy: Sendable, Equatable {
         self.totalBytes = totalBytes
         self.dryRun = dryRun
         self.safety = safety
+        self.requiresExtraAcknowledgement = requiresExtraAcknowledgement
     }
 }
 
 public enum ConfirmationBuilder {
-    public static func make(_ suggestion: CleanupSuggestion, dryRun: Bool) -> ConfirmationCopy {
+    public static func make(_ suggestion: CleanupSuggestion, dryRun: Bool, trashInstead: Bool = false) -> ConfirmationCopy {
         let size = ByteFormat.string(suggestion.size)
         let count = suggestion.items.count
         let review = suggestion.safety == .review
             ? " This is marked Review because it may contain data you care about."
             : ""
+        let extra = suggestion.safety == .review && !dryRun
+        let deletes = suggestion.effect == .removePermanently && !trashInstead
         if dryRun {
             return ConfirmationCopy(
                 title: "Preview \(suggestion.headline)?",
@@ -119,11 +125,24 @@ public enum ConfirmationBuilder {
                 paths: suggestion.paths,
                 totalBytes: suggestion.size,
                 dryRun: true,
-                safety: suggestion.safety
+                safety: suggestion.safety,
+                requiresExtraAcknowledgement: false
+            )
+        }
+        if deletes {
+            return ConfirmationCopy(
+                title: "Delete permanently?",
+                detail: "Delete permanently, can't be undone. This removes \(size) across \(count) \(count == 1 ? "path" : "paths").\(review)",
+                confirmTitle: "Delete permanently",
+                paths: suggestion.paths,
+                totalBytes: suggestion.size,
+                dryRun: false,
+                safety: suggestion.safety,
+                requiresExtraAcknowledgement: extra
             )
         }
         switch suggestion.effect {
-        case .moveToTrash:
+        case .removePermanently, .moveToTrash:
             return ConfirmationCopy(
                 title: "Move \(count) \(count == 1 ? "path" : "paths") to Trash?",
                 detail: "DevDisk will move \(size) to Trash. You can restore the items from Trash until you empty it.\(review)",
@@ -131,7 +150,8 @@ public enum ConfirmationBuilder {
                 paths: suggestion.paths,
                 totalBytes: suggestion.size,
                 dryRun: false,
-                safety: suggestion.safety
+                safety: suggestion.safety,
+                requiresExtraAcknowledgement: extra
             )
         case .emptyTrash:
             return ConfirmationCopy(
@@ -180,7 +200,8 @@ public struct CleanupExecutor: Sendable {
         _ suggestion: CleanupSuggestion,
         scanRoot: String,
         dryRun: Bool,
-        now: Date = Date()
+        now: Date = Date(),
+        trashInstead: Bool = false
     ) throws -> RemovalRecord {
         if suggestion.items.isEmpty {
             throw SafetyViolation.emptySelection
@@ -230,8 +251,16 @@ public struct CleanupExecutor: Sendable {
         }
 
         switch suggestion.effect {
-        case .moveToTrash:
+        case .removePermanently where trashInstead:
+            return apply(suggestion, now: now, trashed: true) { path in
+                try performer.moveToTrash(path: path)
+            }
+        case .removePermanently:
             return apply(suggestion, now: now) { path in
+                try performer.removePermanently(path: path)
+            }
+        case .moveToTrash:
+            return apply(suggestion, now: now, trashed: true) { path in
                 try performer.moveToTrash(path: path)
             }
         case .emptyTrash:
@@ -312,6 +341,7 @@ public struct CleanupExecutor: Sendable {
     private func apply(
         _ suggestion: CleanupSuggestion,
         now: Date,
+        trashed: Bool = false,
         action: (String) throws -> Void
     ) -> RemovalRecord {
         var freed: UInt64 = 0
@@ -335,8 +365,9 @@ public struct CleanupExecutor: Sendable {
                 )
             }
         }
-        let verb = suggestion.effect == .emptyTrash ? "Deleted" : "Moved"
-        let destination = suggestion.effect == .emptyTrash ? "" : " to Trash"
+        let permanently = !trashed && (suggestion.effect == .removePermanently || suggestion.effect == .emptyTrash)
+        let verb = permanently ? "Deleted" : "Moved"
+        let destination = permanently ? " permanently" : " to Trash"
         return record(
             suggestion,
             now: now,

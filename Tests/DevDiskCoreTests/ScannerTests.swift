@@ -205,6 +205,16 @@ struct MemoryFileSystem: FileSystemProbe {
         return names.sorted()
     }
 
+    func listing(at path: String) async throws -> [ListedEntry] {
+        let names = try await entries(at: path)
+        return names.map { name in
+            let child = path == "/" ? "/\(name)" : path + "/" + name
+            guard let meta = nodes[child] else { return ListedEntry(name: name, kind: .unknown) }
+            let kind: ListedKind = meta.isSymlink ? .symlink : (meta.isDirectory ? .directory : .file)
+            return ListedEntry(name: name, kind: kind)
+        }
+    }
+
     func metadata(at path: String) async throws -> EntryMetadata {
         guard let meta = nodes[path] else { throw FileSystemError.notFound(path) }
         return meta

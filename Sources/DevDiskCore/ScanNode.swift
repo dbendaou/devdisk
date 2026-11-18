@@ -131,19 +131,28 @@ public struct ScanProgress: Sendable, Equatable, Hashable {
     public var allocatedBytes: UInt64
     public var currentPath: String
     public var errorCount: Int
+    public var suggestionsFound: Int
+    public var reclaimableBytes: UInt64
+    public var startedAt: Date?
 
     public init(
         visitedFiles: Int = 0,
         visitedDirectories: Int = 0,
         allocatedBytes: UInt64 = 0,
         currentPath: String = "",
-        errorCount: Int = 0
+        errorCount: Int = 0,
+        suggestionsFound: Int = 0,
+        reclaimableBytes: UInt64 = 0,
+        startedAt: Date? = nil
     ) {
         self.visitedFiles = visitedFiles
         self.visitedDirectories = visitedDirectories
         self.allocatedBytes = allocatedBytes
         self.currentPath = currentPath
         self.errorCount = errorCount
+        self.suggestionsFound = suggestionsFound
+        self.reclaimableBytes = reclaimableBytes
+        self.startedAt = startedAt
     }
 }
 

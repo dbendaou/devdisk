@@ -101,7 +101,12 @@ struct RootView: View {
             if model.phase == .scanning {
                 ProgressView()
                     .progressViewStyle(.linear)
-                Text("\(model.progress.visitedFiles.formatted()) files · \(ByteFormat.string(model.progress.allocatedBytes)) · \(model.progress.currentPath)")
+                HStack(spacing: 8) {
+                    if let started = model.progress.startedAt {
+                        Text(started, style: .timer)
+                    }
+                    Text("\(model.progress.visitedFiles.formatted()) files · \(ByteFormat.string(model.progress.allocatedBytes)) · \(model.progress.suggestionsFound) found · \(ByteFormat.string(model.report.estimatedReclaimableBytes)) reclaimable · \(model.progress.currentPath)")
+                }
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -194,7 +199,7 @@ struct RootView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Safety").font(.headline)
             Text("Smart cleanup is the main screen. Explore is a treemap and file list for anything the rules do not name.")
-            Text("The default action moves files to Trash. brew, docker, podman, simctl, and git gc run only after you confirm them. Container disk images are never deleted; the card runs that tool's prune command.")
+            Text("The default action deletes files permanently. A switch can move them to Trash instead. brew, docker, podman, simctl, and git gc run only after you confirm them. Container disk images are never deleted; the card runs that tool's prune command.")
             Text("Nothing outside the scanned folder is touched. System folders, Keychains, Mail, and Photos libraries are refused.")
             Text("Safe means the bytes are regenerable. Review means the folder may hold data you still want. Databases are always Review.")
         }
@@ -205,9 +210,10 @@ struct RootView: View {
 struct ConfirmationSheet: View {
     @Bindable var model: AppModel
     var pending: PendingCleanup
+    @State private var acknowledged = false
 
     private var copy: ConfirmationCopy {
-        ConfirmationBuilder.make(pending.suggestion, dryRun: pending.dryRun)
+        ConfirmationBuilder.make(pending.suggestion, dryRun: pending.dryRun, trashInstead: pending.movesToTrash)
     }
 
     var body: some View {
@@ -239,16 +245,24 @@ struct ConfirmationSheet: View {
             .frame(minHeight: 180, maxHeight: 320)
             .padding(8)
             .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            if copy.requiresExtraAcknowledgement {
+                Toggle(
+                    pending.movesToTrash
+                        ? "This may contain data I still need. Move it to Trash anyway."
+                        : "This may contain data I still need. Delete it permanently anyway.",
+                    isOn: $acknowledged
+                )
+            }
             HStack {
                 Button("Cancel") { model.pending = nil }
                     .keyboardShortcut(.cancelAction)
                 Spacer()
                 Button(copy.confirmTitle) {
-                    Task { await model.performPending() }
+                    model.performPending()
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
-                .disabled(model.isActing)
+                .disabled(model.isActing || (copy.requiresExtraAcknowledgement && !acknowledged))
             }
             if model.isActing {
                 ProgressView("Working…")
@@ -288,6 +302,18 @@ struct ExploreScreen: View {
             .pickerStyle(.segmented)
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
+            if model.tree == nil {
+                HStack {
+                    Text(model.phase == .scanning ? "Cleanup is running. The map is a separate full walk." : "The map walks every file. Cleanup does not need it.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Build map") { model.scanExplore() }
+                        .disabled(model.phase == .scanning || model.rootPath == nil)
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+            }
             switch model.explorePane {
             case .map: TreemapScreen(model: model)
             case .files: FilesScreen(model: model)

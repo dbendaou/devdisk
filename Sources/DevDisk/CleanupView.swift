@@ -23,13 +23,17 @@ struct CleanupScreen: View {
                 .pickerStyle(.segmented)
                 .frame(maxWidth: 240)
                 Toggle("Preview only", isOn: $model.previewOnly)
+                Toggle("Move to Trash", isOn: $model.movesToTrash)
+                    .help("Off deletes permanently. On moves the files to Trash instead.")
                 Spacer()
                 Text("\(model.filteredSuggestions.count) suggestions")
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            if model.tree == nil {
+            if model.filteredSuggestions.isEmpty && model.phase == .scanning {
+                ContentUnavailableView("Scanning", systemImage: "sparkles", description: Text("Known caches show up here as soon as they are measured. You can delete a card while the scan continues."))
+            } else if model.rootPath == nil {
                 ContentUnavailableView("No scan yet", systemImage: "sparkles", description: Text("Scan your home folder to find developer caches."))
             } else if model.filteredSuggestions.isEmpty {
                 ContentUnavailableView(
@@ -160,6 +164,7 @@ private struct CleanupCard: View {
 
     private var primaryTitle: String {
         switch suggestion.effect {
+        case .removePermanently: model.movesToTrash ? "Move to Trash" : "Delete"
         case .moveToTrash: "Move to Trash"
         case .emptyTrash: "Empty Trash"
         case .command, .commandForEach: "Run command"

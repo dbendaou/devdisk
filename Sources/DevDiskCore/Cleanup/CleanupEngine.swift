@@ -203,7 +203,7 @@ private struct EvalState {
             }
             // Moving a directory to Trash deletes every descendant. Emptying Trash
             // deletes listed children one by one, so protected children are filtered later.
-            if effect == .moveToTrash && PathSafety.containsProtected(node) {
+            if (effect == .moveToTrash || effect == .removePermanently) && PathSafety.containsProtected(node) {
                 skippedProtected.append(path)
                 continue
             }
@@ -359,7 +359,7 @@ private struct EvalState {
 
 }
 
-private func headline(name: String, count: Int, size: UInt64, phrasing: CleanupPhrasing, days: Int) -> String {
+func headline(name: String, count: Int, size: UInt64, phrasing: CleanupPhrasing, days: Int) -> String {
     let sizeText = ByteFormat.string(size)
     switch phrasing {
     case .removeCount(let singular, let plural, let qualifier):
@@ -381,8 +381,10 @@ private func headline(name: String, count: Int, size: UInt64, phrasing: CleanupP
     }
 }
 
-private func actionDescription(effect: CleanupEffect, count: Int) -> String {
+func actionDescription(effect: CleanupEffect, count: Int) -> String {
     switch effect {
+    case .removePermanently:
+        "Delete \(count) \(count == 1 ? "path" : "paths") permanently"
     case .moveToTrash:
         "Move \(count) \(count == 1 ? "path" : "paths") to Trash"
     case .emptyTrash:

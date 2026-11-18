@@ -414,7 +414,7 @@ private actor InodeLedger {
     }
 }
 
-private actor DirectoryGate {
+actor DirectoryGate {
     private var permits: Int
     private var waiters: [CheckedContinuation<Void, Error>] = []
     private var cancelled = false

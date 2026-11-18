@@ -83,6 +83,8 @@ public enum CleanupLocator: Sendable, Equatable {
 }
 
 public enum CleanupEffect: Sendable, Equatable {
+    /// Deletes the files. This is the default. The app can still move them to Trash when that setting is on.
+    case removePermanently
     case moveToTrash
     case emptyTrash
     /// `previewArguments` is a non-destructive command used for Preview, such as `brew cleanup -n`.
@@ -92,6 +94,7 @@ public enum CleanupEffect: Sendable, Equatable {
 
     public var displayLine: String {
         switch self {
+        case .removePermanently: "Delete permanently"
         case .moveToTrash: "Move to Trash"
         case .emptyTrash: "Empty Trash"
         case .command(_, _, let display, _): display
@@ -103,7 +106,7 @@ public enum CleanupEffect: Sendable, Equatable {
         switch self {
         case .command(let executable, _, _, _): executable
         case .commandForEach(let executable, _, _, _): executable
-        case .moveToTrash, .emptyTrash: nil
+        case .removePermanently, .moveToTrash, .emptyTrash: nil
         }
     }
 }
@@ -139,7 +142,7 @@ public struct RuleSpec: Sendable, Equatable, Identifiable {
         ecosystem: Ecosystem,
         safety: SafetyLevel,
         locator: CleanupLocator,
-        effect: CleanupEffect = .moveToTrash,
+        effect: CleanupEffect = .removePermanently,
         phrasing: CleanupPhrasing = .clearNamed,
         minimumBytes: UInt64 = 1_000_000,
         countsTowardEstimate: Bool = true,
@@ -265,6 +268,27 @@ public struct CleanupReport: Sendable, Equatable {
         self.firmBytes = firmBytes
         self.upperBoundBytes = upperBoundBytes
         self.skippedProtected = skippedProtected
+    }
+
+    public static func summarizing(_ suggestions: [CleanupSuggestion], skippedProtected: [String] = []) -> CleanupReport {
+        let counting = suggestions.filter(\.countsTowardEstimate)
+        let safe = counting.filter { $0.safety == .safe }.reduce(UInt64(0)) { $0 + $1.size }
+        let review = counting.filter { $0.safety == .review }.reduce(UInt64(0)) { $0 + $1.size }
+        let firm = counting.filter { !$0.estimateIsUpperBound }.reduce(UInt64(0)) { $0 + $1.size }
+        let upper = counting.filter(\.estimateIsUpperBound).reduce(UInt64(0)) { $0 + $1.size }
+        return CleanupReport(
+            suggestions: suggestions,
+            estimatedReclaimableBytes: safe + review,
+            safeBytes: safe,
+            reviewBytes: review,
+            firmBytes: firm,
+            upperBoundBytes: upper,
+            skippedProtected: skippedProtected
+        )
+    }
+
+    public func removing(id: String) -> CleanupReport {
+        CleanupReport.summarizing(suggestions.filter { $0.id != id }, skippedProtected: skippedProtected)
     }
 
     public var groups: [CleanupGroup] {
