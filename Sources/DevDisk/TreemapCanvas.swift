@@ -10,15 +10,18 @@ struct TreemapScreen: View {
             breadcrumb
             Divider()
             GeometryReader { proxy in
-                let rects = layout(in: proxy.size)
-                ZStack(alignment: .topLeading) {
+                let pulsing = model.mapScanning || model.placed.contains(where: \.isPartial)
+                TimelineView(.animation(minimumInterval: 0.6, paused: !pulsing)) { timeline in
+                    let pulse = 0.35 + 0.4 * abs(sin(timeline.date.timeIntervalSinceReferenceDate * 2.5))
                     Canvas { context, _ in
-                        for rect in rects {
+                        for rect in model.placed {
                             let draw = inset(rect)
                             guard draw.width > 0.5, draw.height > 0.5 else { continue }
                             let cg = CGRect(x: draw.x, y: draw.y, width: draw.width, height: draw.height)
                             let path = Path(roundedRect: cg, cornerRadius: 3)
-                            if rect.role == .leaf {
+                            if rect.isPartial {
+                                context.fill(path, with: .color(Color.secondary.opacity(pulse)))
+                            } else if rect.role == .leaf {
                                 context.fill(path, with: .color(rect.kind.color.opacity(rect.nodeID == model.selectedID ? 1 : 0.88)))
                                 if draw.width > 72, draw.height > 22 {
                                     context.draw(
@@ -37,10 +40,19 @@ struct TreemapScreen: View {
                     }
                     .gesture(
                         SpatialTapGesture().onEnded { event in
-                            select(rects, at: event.location)
+                            select(model.placed, at: event.location)
                         }
                     )
                 }
+                .onAppear {
+                    model.noteMapSize(width: proxy.size.width, height: proxy.size.height)
+                }
+                .onChange(of: proxy.size) { _, size in
+                    model.noteMapSize(width: size.width, height: size.height)
+                }
+            }
+            .onChange(of: model.zoomPath) { _, _ in
+                model.relayout()
             }
             .padding(8)
             .background(Color.primary.opacity(0.04))
@@ -110,14 +122,6 @@ struct TreemapScreen: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
         }
-    }
-
-    private func layout(in size: CGSize) -> [LayoutRect] {
-        guard let node = model.zoomNode, size.width > 2, size.height > 2 else { return [] }
-        return SquarifiedTreemap.layout(
-            node: node,
-            in: TreemapFrame(x: 0, y: 0, width: size.width, height: size.height)
-        )
     }
 
     private func inset(_ rect: LayoutRect) -> TreemapFrame {

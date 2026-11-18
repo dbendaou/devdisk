@@ -27,5 +27,7 @@ jobs:
         run: |
           test -x dist/DevDisk.app/Contents/MacOS/DevDisk
           test -f dist/DevDisk.app/Contents/Info.plist
+          test -s dist/DevDisk.app/Contents/Resources/AppIcon.icns
+          grep -q CFBundleIconFile dist/DevDisk.app/Contents/Info.plist
           codesign --verify --deep --strict dist/DevDisk.app
           codesign -dv dist/DevDisk.app

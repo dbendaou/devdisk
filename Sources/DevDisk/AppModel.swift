@@ -50,6 +50,37 @@ enum ScanPhase: Equatable {
     case failed(String)
 }
 
+enum RowActivity: Equatable {
+    case running(verb: String, freed: UInt64)
+    case finished(message: String, success: Bool, hideFromEstimate: Bool)
+
+    var caption: String {
+        switch self {
+        case .running(let verb, let freed):
+            freed > 0 ? "\(verb) \(ByteFormat.string(freed)) freed" : verb
+        case .finished(let message, _, _):
+            message
+        }
+    }
+}
+
+final class CancelFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var flag = false
+
+    func cancel() {
+        lock.lock()
+        flag = true
+        lock.unlock()
+    }
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return flag
+    }
+}
+
 struct PendingCleanup: Identifiable {
     var suggestion: CleanupSuggestion
     var dryRun: Bool
@@ -86,11 +117,17 @@ final class AppModel {
     var pending: PendingCleanup?
     var log = RemovalLog()
     var statusMessage: String?
-    var isActing = false
+    var rowActivity: [String: RowActivity] = [:]
+    var mapScanning = false
+    var placed: [LayoutRect] = []
 
     @ObservationIgnored private var scanTask: Task<Void, Never>?
     @ObservationIgnored private var scanGeneration = UUID()
-    @ObservationIgnored private var activeDeletes = 0
+    @ObservationIgnored private var mapTask: Task<Void, Never>?
+    @ObservationIgnored private var mapGeneration = UUID()
+    @ObservationIgnored private var cancelFlags: [String: CancelFlag] = [:]
+    @ObservationIgnored private var layoutGeneration = 0
+    @ObservationIgnored private var mapCanvas = (width: 0.0, height: 0.0)
     /// Paths confirmed for removal. Checked on the main actor so a suggestion
     /// cannot reappear in the gap before the scanner's suppression actor updates.
     @ObservationIgnored private var removedPrefixes: [String] = []
@@ -111,6 +148,24 @@ final class AppModel {
     var selectedNode: ScanNode? {
         guard let selectedID, let root = tree?.root else { return nil }
         return root.node(id: selectedID)
+    }
+
+    /// Suggestions that are still to do. A running or finished delete is no longer reclaimable.
+    var liveReport: CleanupReport {
+        let hidden = Set(rowActivity.compactMap { id, activity -> String? in
+            switch activity {
+            case .running:
+                return id
+            case .finished(_, _, true):
+                return id
+            case .finished(_, _, false):
+                return nil
+            }
+        })
+        return CleanupReport.summarizing(
+            report.suggestions.filter { !hidden.contains($0.id) },
+            skippedProtected: report.skippedProtected
+        )
     }
 
     var filteredSuggestions: [CleanupSuggestion] {
@@ -194,39 +249,85 @@ final class AppModel {
         }
     }
 
-    /// Full per-file walk used only for the Explore treemap.
+    /// Full per-file walk for the Explore treemap. It runs beside a cleanup scan.
     func scanExplore() {
         guard let rootPath else { return }
-        scanTask?.cancel()
+        mapTask?.cancel()
         let generation = UUID()
-        scanGeneration = generation
+        mapGeneration = generation
+        mapScanning = true
         let path = rootPath
-        phase = .scanning
         let scanner = DirectoryScanner()
-        scanTask = Task {
+        mapTask = Task {
             let stream = scanner.events(root: path)
             do {
                 for try await event in stream {
                     switch event {
-                    case .progress(let value):
-                        progress = value
-                    case .finished(let finished):
-                        guard scanGeneration == generation else { return }
-                        tree = finished
-                        zoomPath = path
-                        selectedID = finished.root.id
-                        phase = .ready
-                        section = .explore
+                    case .progress:
+                        break
+                    case .snapshot(let partial), .finished(let partial):
+                        guard mapGeneration == generation else { return }
+                        adoptMap(partial)
                     }
                 }
+                guard mapGeneration == generation else { return }
+                mapScanning = false
             } catch is CancellationError {
-                guard scanGeneration == generation else { return }
-                phase = .ready
+                guard mapGeneration == generation else { return }
+                mapScanning = false
             } catch {
-                guard scanGeneration == generation else { return }
-                phase = .failed(error.localizedDescription)
+                guard mapGeneration == generation else { return }
+                mapScanning = false
+                statusMessage = error.localizedDescription
             }
         }
+    }
+
+    func ensureMap() {
+        guard rootPath != nil, tree == nil, mapTask == nil else { return }
+        scanExplore()
+    }
+
+    func cancelMap() {
+        mapTask?.cancel()
+        mapTask = nil
+        mapScanning = false
+    }
+
+    func noteMapSize(width: Double, height: Double) {
+        guard abs(width - mapCanvas.width) > 1 || abs(height - mapCanvas.height) > 1 else { return }
+        mapCanvas = (width, height)
+        relayout()
+    }
+
+    func relayout() {
+        guard let node = zoomNode, mapCanvas.width > 2, mapCanvas.height > 2 else {
+            placed = []
+            return
+        }
+        layoutGeneration += 1
+        let generation = layoutGeneration
+        let snapshot = node
+        let frame = TreemapFrame(x: 0, y: 0, width: mapCanvas.width, height: mapCanvas.height)
+        Task.detached {
+            let rects = SquarifiedTreemap.layout(node: snapshot, in: frame)
+            await MainActor.run {
+                guard generation == self.layoutGeneration else { return }
+                self.placed = rects
+            }
+        }
+    }
+
+    private func adoptMap(_ tree: ScanTree) {
+        let hadTree = self.tree != nil
+        self.tree = tree
+        if !hadTree || zoomPath == nil {
+            zoomPath = tree.root.path
+        }
+        if selectedID == nil {
+            selectedID = tree.root.id
+        }
+        relayout()
     }
 
     func setStaleDays(_ days: Int) {
@@ -272,52 +373,115 @@ final class AppModel {
         let dryRun = pending.dryRun
         let trashInstead = pending.movesToTrash
         self.pending = nil
+        let verb = activityVerb(suggestion, dryRun: dryRun, trashInstead: trashInstead)
+        rowActivity[suggestion.id] = .running(verb: verb, freed: 0)
         if !dryRun {
-            report = report.removing(id: suggestion.id)
             removedPrefixes.append(contentsOf: suggestion.paths)
             let held = suppressions
             let paths = suggestion.paths
             Task { await held.suppress(paths) }
         }
-        activeDeletes += 1
-        isActing = true
-        let performer = MacCleanupPerformer()
+        let flag = CancelFlag()
+        cancelFlags[suggestion.id] = flag
+        var performer = MacCleanupPerformer()
+        performer.isCancelled = { flag.isCancelled }
+        let id = suggestion.id
+        let (stream, continuation) = AsyncStream.makeStream(of: UInt64.self)
         Task {
-            defer {
-                activeDeletes -= 1
-                isActing = activeDeletes > 0
+            let pump = Task { @MainActor in
+                for await bytes in stream {
+                    self.noteFreed(id, bytes)
+                }
             }
+            let record: RemovalRecord
             do {
-                let record = try await Task.detached {
-                    try CleanupExecutor(performer: performer).execute(
+                record = try await Task.detached {
+                    try await CleanupExecutor(performer: performer, fileSystem: POSIXFileSystem()).execute(
                         suggestion,
                         scanRoot: rootPath,
                         dryRun: dryRun,
-                        trashInstead: trashInstead
+                        trashInstead: trashInstead,
+                        progress: { continuation.yield($0.bytesFreed) },
+                        isCancelled: { flag.isCancelled }
                     )
                 }.value
-                log.records.insert(record, at: 0)
-                try? RemovalLogStore.save(log)
-                if record.succeeded && !record.dryRun {
-                    report = report.removing(id: suggestion.id)
-                    forgetRemoved(suggestion.paths)
-                    volume = VolumeProbe.stats(at: rootPath)
-                    statusMessage = record.message
-                } else if !record.succeeded && !dryRun {
-                    forgetRemoved(suggestion.paths)
-                    restore(suggestion)
-                    statusMessage = record.message
-                } else {
-                    statusMessage = record.message
-                }
             } catch {
-                if !dryRun {
-                    forgetRemoved(suggestion.paths)
-                    restore(suggestion)
-                }
-                statusMessage = error.localizedDescription
+                continuation.finish()
+                await pump.value
+                self.finish(suggestion, dryRun: dryRun, rootPath: rootPath, message: error.localizedDescription, success: false, bytes: 0)
+                return
             }
+            continuation.finish()
+            await pump.value
+            let message = cardMessage(record, trashInstead: trashInstead)
+            self.finish(
+                suggestion,
+                dryRun: dryRun,
+                rootPath: rootPath,
+                message: message,
+                success: record.succeeded,
+                bytes: record.bytesFreed,
+                logRecord: record
+            )
         }
+    }
+
+    func cancelRow(_ id: String) {
+        cancelFlags[id]?.cancel()
+    }
+
+    private func noteFreed(_ id: String, _ bytes: UInt64) {
+        guard case .running(let verb, _) = rowActivity[id] else { return }
+        rowActivity[id] = .running(verb: verb, freed: bytes)
+    }
+
+    private func finish(
+        _ suggestion: CleanupSuggestion,
+        dryRun: Bool,
+        rootPath: String,
+        message: String,
+        success: Bool,
+        bytes: UInt64,
+        logRecord: RemovalRecord? = nil
+    ) {
+        if let logRecord {
+            log.records.insert(logRecord, at: 0)
+            try? RemovalLogStore.save(log)
+        }
+        let hide = success && !dryRun
+        rowActivity[suggestion.id] = .finished(message: message, success: success, hideFromEstimate: hide)
+        cancelFlags[suggestion.id] = nil
+        if success && !dryRun {
+            volume = VolumeProbe.stats(at: rootPath)
+        } else if !dryRun {
+            forgetRemoved(suggestion.paths)
+            let held = suppressions
+            Task { await held.release(suggestion.paths) }
+        }
+        statusMessage = message
+        _ = bytes
+    }
+
+    private func activityVerb(_ suggestion: CleanupSuggestion, dryRun: Bool, trashInstead: Bool) -> String {
+        if dryRun { return "Previewing…" }
+        switch suggestion.effect {
+        case .command, .commandForEach:
+            return "Running…"
+        case .removePermanently where trashInstead, .moveToTrash:
+            return "Moving to Trash…"
+        default:
+            return "Deleting…"
+        }
+    }
+
+    private func cardMessage(_ record: RemovalRecord, trashInstead: Bool) -> String {
+        if record.succeeded && !record.dryRun && !trashInstead && record.bytesFreed > 0 && !record.message.hasPrefix("Finished") && !record.message.hasPrefix("Ran ") {
+            return "Freed \(ByteFormat.string(record.bytesFreed))"
+        }
+        if record.succeeded && !record.dryRun && trashInstead {
+            return "Moved \(ByteFormat.string(record.bytesFreed)) to Trash"
+        }
+        return record.message
     }
 
     private func forgetRemoved(_ paths: [String]) {
@@ -325,9 +489,5 @@ final class AppModel {
         removedPrefixes.removeAll { dropped.contains($0) }
     }
 
-    private func restore(_ suggestion: CleanupSuggestion) {
-        guard !report.suggestions.contains(where: { $0.id == suggestion.id }) else { return }
-        report = CleanupReport.summarizing(report.suggestions + [suggestion])
-    }
 }
 #endif

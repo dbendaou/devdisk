@@ -54,6 +54,7 @@ public struct LayoutRect: Sendable, Equatable, Hashable, Identifiable {
     public var title: String
     public var path: String
     public var allocatedSize: UInt64
+    public var isPartial: Bool
     public var id: Int { nodeID }
 
     public init(
@@ -64,7 +65,8 @@ public struct LayoutRect: Sendable, Equatable, Hashable, Identifiable {
         role: LayoutRole,
         title: String,
         path: String,
-        allocatedSize: UInt64
+        allocatedSize: UInt64,
+        isPartial: Bool = false
     ) {
         self.nodeID = nodeID
         self.frame = frame
@@ -74,6 +76,7 @@ public struct LayoutRect: Sendable, Equatable, Hashable, Identifiable {
         self.title = title
         self.path = path
         self.allocatedSize = allocatedSize
+        self.isPartial = isPartial
     }
 }
 
@@ -131,7 +134,8 @@ public enum SquarifiedTreemap {
             role: canExpand ? .container : .leaf,
             title: node.name,
             path: node.path,
-            allocatedSize: node.allocatedSize
+            allocatedSize: node.allocatedSize,
+            isPartial: node.isPartial
         ))
         guard canExpand else { return }
         let weights = kids.map { TreemapWeight(id: $0.id, size: $0.allocatedSize) }

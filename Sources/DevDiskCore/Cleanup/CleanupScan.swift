@@ -13,6 +13,11 @@ public actor CleanupSuppressions {
 
     public init() {}
 
+    public func release(_ paths: [String]) {
+        let dropping = Set(paths.map(Paths.normalize))
+        prefixes.removeAll { dropping.contains($0) }
+    }
+
     public func suppress(_ paths: [String]) {
         for path in paths {
             let normalized = Paths.normalize(path)

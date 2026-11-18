@@ -1,5 +1,9 @@
 # DevDisk
 
+<img src="packaging/AppIcon-masked-1024.png" width="128" alt="DevDisk">
+
+[![CI](https://github.com/dbendaou/devdisk/actions/workflows/ci.yml/badge.svg)](https://github.com/dbendaou/devdisk/actions/workflows/ci.yml)
+
 DevDisk is a native macOS app for reclaiming space on a developer’s disk. The main screen is **Smart cleanup**: a catalogue of the folders toolchains, package managers, IDEs, simulators, and container engines actually leave behind. Each suggestion names the ecosystem, the size, whether it is safe to regenerate, and the exact action (delete permanently, or a tool’s own prune command). A switch can send deletes to Trash instead.
 
 A secondary **Explore** view is a squarified treemap and a size-sorted outline, for drilling into anything the rules do not name. It follows the same idea as [Disk Inventory X](https://github.com/diskinv/diskinv) (scan a folder, show a treemap, an outline, and a kind breakdown). The layout algorithm is an independent implementation of Bruls, Huizing, and van Wijk’s squarified treemaps. None of Disk Inventory X’s GPL code is copied. This project is MIT licensed.
@@ -8,9 +12,9 @@ Requires Apple Silicon and macOS 14 or later (the same deployment target as `Pac
 
 ## Screens
 
-**Smart cleanup** opens first after a scan. A stepper, “Projects untouched for N+ days” (default 30), filters per-project folders such as `node_modules`, `.next`, `target`, and `.venv`. Global caches are always listed. Suggestions are grouped by ecosystem (JavaScript, Apple, Editors, Python, Rust, Go, Java & Android, Ruby, Containers, Databases, Tools). A card shows the headline, the safety level, what the folder is, the action, and, for project folders, the project name, last-modified date, and size. Preview records what would happen. The real button opens a confirmation sheet that lists every path and the total size.
+**Smart cleanup** opens first after a scan. A stepper, “Projects untouched for N+ days” (default 30), filters per-project folders such as `node_modules`, `.next`, `target`, and `.venv`. Global caches are always listed. Suggestions are grouped by ecosystem (JavaScript, Apple, Editors, Python, Rust, Go, Java & Android, Ruby, Containers, Databases, Tools). A card shows the headline, the safety level, what the folder is, the action, and, for project folders, the project name, last-modified date, and size. Preview records what would happen. The real button opens a confirmation sheet that lists every path and the total size. Confirming closes the sheet immediately. The card then shows **Deleting…** or **Running…**, the bytes freed so far, and an X that stops the task. What was already removed stays removed. When it finishes the card reads **Freed 5.7 GB** or the error. Other cards, the scan, and further deletes keep working.
 
-**Explore** is a Map / Files / Kinds switch. The map is a squarified treemap coloured by file kind. Click a block to select it; click a selected folder to zoom in, or a selected file to reveal it in Finder. Files is an outline sorted by size, name, kind, or date, with the same Reveal action. Kinds is the extension and kind breakdown.
+**Explore** is a Map / Files / Kinds switch. Opening it starts a full walk beside cleanup. The map, file list, and kind totals update about once a second as directories are measured. A folder that is listed but not measured yet is a placeholder. The map is a squarified treemap coloured by file kind. Click a block to select it; click a selected folder to zoom in, or a selected file to reveal it in Finder. Files is an outline sorted by size, name, kind, or date, with the same Reveal action. Kinds is the extension and kind breakdown.
 
 The header shows the volume’s total, used, and free space, plus **estimated reclaimable**. Container prune cards are included as an upper bound (“up to N”) because `docker system prune` does not shrink the disk image to zero. `git gc` and `simctl delete unavailable` are shown with their on-disk size but are not added to the total, because they only reclaim part of it.
 
@@ -22,7 +26,7 @@ make app           # macOS only: dist/DevDisk.app, ad-hoc signed
 open dist/DevDisk.app
 ```
 
-`make test` runs `swift test`. On macOS it also builds the `DevDisk` product, so the app target is type-checked even when test discovery only depends on the library. `make app` runs `swift build -c release --product DevDisk`, copies `.build/release/DevDisk` into `dist/DevDisk.app`, writes `Contents/PkgInfo`, and runs `codesign --force --deep -s -`. No Xcode project is required. GitHub Actions runs the tests on Ubuntu and builds the app on macOS.
+`make test` runs `swift test`. On macOS it also builds the `DevDisk` product, so the app target is type-checked even when test discovery only depends on the library. `make app` runs `swift build -c release --product DevDisk`, renders `packaging/AppIcon-1024.png` into an iconset (Pillow, or `sips` on the committed masked PNG if Pillow is missing), runs `iconutil` into `Contents/Resources/AppIcon.icns`, copies `.build/release/DevDisk` into `dist/DevDisk.app`, writes `Contents/PkgInfo`, and runs `codesign --force --deep -s -`. No Xcode project is required. Command Line Tools are enough. GitHub Actions runs the tests on Ubuntu and builds the app on macOS. The repository is [dbendaou/devdisk](https://github.com/dbendaou/devdisk).
 
 Scan your home folder for the full catalogue. A smaller folder only matches rules whose paths sit inside it.
 

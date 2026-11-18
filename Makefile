@@ -24,7 +24,9 @@ app:
 	fi
 	$(SWIFT) build -c $(CONFIG) --product DevDisk
 	rm -rf "$(APP)"
-	mkdir -p "$(APP)/Contents/MacOS" "$(APP)/Contents/Resources"
+	mkdir -p "$(APP)/Contents/MacOS" "$(APP)/Contents/Resources" dist
+	python3 packaging/render_icon.py --iconset dist/AppIcon.iconset
+	iconutil -c icns dist/AppIcon.iconset -o "$(APP)/Contents/Resources/AppIcon.icns"
 	cp .build/$(CONFIG)/DevDisk "$(APP)/Contents/MacOS/DevDisk"
 	cp App/Info.plist "$(APP)/Contents/Info.plist"
 	printf 'APPL????' > "$(APP)/Contents/PkgInfo"

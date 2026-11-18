@@ -1,5 +1,6 @@
 .build/
 dist/
+packaging/*.iconset/
 .swiftpm/
 .DS_Store
 DerivedData/

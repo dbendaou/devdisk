@@ -173,10 +173,10 @@ struct CleanupTests {
         #expect(report.skippedProtected.contains("/Users/dev/Projects"))
     }
 
-    @Test func dryRunDoesNotCallThePerformer() throws {
+    @Test func dryRunDoesNotCallThePerformer() async throws {
         let suggestion = sampleSuggestion()
         let performer = RecordingPerformer()
-        let record = try CleanupExecutor(performer: performer).execute(suggestion, scanRoot: "/Users/dev", dryRun: true)
+        let record = try await CleanupExecutor(performer: performer).execute(suggestion, scanRoot: "/Users/dev", dryRun: true)
         #expect(record.dryRun)
         #expect(record.succeeded)
         #expect(record.bytesFreed == 0)
@@ -188,10 +188,10 @@ struct CleanupTests {
         #expect(copy.detail.contains("Nothing will be deleted"))
     }
 
-    @Test func trashAndCommandExecution() throws {
+    @Test func trashAndCommandExecution() async throws {
         let suggestion = sampleSuggestion()
         let performer = RecordingPerformer()
-        let record = try CleanupExecutor(performer: performer).execute(suggestion, scanRoot: "/Users/dev", dryRun: false)
+        let record = try await CleanupExecutor(performer: performer).execute(suggestion, scanRoot: "/Users/dev", dryRun: false)
         #expect(record.succeeded)
         #expect(record.bytesFreed == 300)
         #expect(performer.trashed == suggestion.paths)
@@ -209,7 +209,7 @@ struct CleanupTests {
             estimateIsUpperBound: true
         )
         performer.trashed.removeAll()
-        let ran = try CleanupExecutor(performer: performer).execute(command, scanRoot: "/Users/dev", dryRun: false)
+        let ran = try await CleanupExecutor(performer: performer).execute(command, scanRoot: "/Users/dev", dryRun: false)
         #expect(ran.succeeded)
         #expect(ran.bytesFreed == 0)
         #expect(performer.trashed.isEmpty)
@@ -219,7 +219,7 @@ struct CleanupTests {
         #expect(confirm.confirmTitle == "Run command")
     }
 
-    @Test func homebrewPreviewRunsTheDryCommand() throws {
+    @Test func homebrewPreviewRunsTheDryCommand() async throws {
         let home = "/Users/dev"
         let root = directory("dev", home, [
             directory("Library", "\(home)/Library", [
@@ -233,18 +233,18 @@ struct CleanupTests {
         let report = CleanupEngine().evaluate(root: root, byteFloor: 1)
         let brew = try #require(report.suggestions.first { $0.ruleID == "cache-homebrew" })
         let performer = RecordingPerformer()
-        let preview = try CleanupExecutor(performer: performer).execute(brew, scanRoot: home, dryRun: true)
+        let preview = try await CleanupExecutor(performer: performer).execute(brew, scanRoot: home, dryRun: true)
         #expect(preview.dryRun)
         #expect(preview.succeeded)
         #expect(performer.commands == ["brew cleanup -n -s"])
         #expect(performer.trashed.isEmpty)
         performer.commands.removeAll()
-        _ = try CleanupExecutor(performer: performer).execute(brew, scanRoot: home, dryRun: false)
+        _ = try await CleanupExecutor(performer: performer).execute(brew, scanRoot: home, dryRun: false)
         #expect(performer.commands == ["brew cleanup -s"])
         #expect(performer.trashed.isEmpty)
     }
 
-    @Test func gitGcRunsInTheRepositoryAndDoesNotDeleteIt() throws {
+    @Test func gitGcRunsInTheRepositoryAndDoesNotDeleteIt() async throws {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let old = now.addingTimeInterval(-90 * 86_400)
         let home = "/Users/dev"
@@ -261,28 +261,28 @@ struct CleanupTests {
         #expect(!git.countsTowardEstimate)
         #expect(git.items.first?.projectName == "repo")
         let performer = RecordingPerformer()
-        let preview = try CleanupExecutor(performer: performer).execute(git, scanRoot: home, dryRun: true)
+        let preview = try await CleanupExecutor(performer: performer).execute(git, scanRoot: home, dryRun: true)
         #expect(preview.dryRun)
         #expect(performer.commands.isEmpty)
-        _ = try CleanupExecutor(performer: performer).execute(git, scanRoot: home, dryRun: false)
+        _ = try await CleanupExecutor(performer: performer).execute(git, scanRoot: home, dryRun: false)
         #expect(performer.commands == ["git -C \(home)/repo gc --prune=now"])
         #expect(performer.trashed.isEmpty)
     }
 
-    @Test func safetyRefusalsHappenBeforeSideEffects() throws {
+    @Test func safetyRefusalsHappenBeforeSideEffects() async throws {
         let performer = RecordingPerformer()
         let executor = CleanupExecutor(performer: performer)
         let outside = forged(path: "/etc/passwd", effect: .moveToTrash)
-        #expect(throws: SafetyViolation.outsideRoot("/etc/passwd")) {
-            try executor.execute(outside, scanRoot: "/Users/dev", dryRun: false)
+        await #expect(throws: SafetyViolation.outsideRoot("/etc/passwd")) {
+            try await executor.execute(outside, scanRoot: "/Users/dev", dryRun: false)
         }
         let keychain = forged(path: "/Users/dev/Library/Keychains/login.keychain-db", effect: .moveToTrash)
-        #expect(throws: SafetyViolation.protected(Paths.normalize(keychain.paths[0]))) {
-            try executor.execute(keychain, scanRoot: "/Users/dev", dryRun: false)
+        await #expect(throws: SafetyViolation.protected(Paths.normalize(keychain.paths[0]))) {
+            try await executor.execute(keychain, scanRoot: "/Users/dev", dryRun: false)
         }
         let root = forged(path: "/Users/dev", effect: .moveToTrash)
-        #expect(throws: SafetyViolation.isScanRoot("/Users/dev")) {
-            try executor.execute(root, scanRoot: "/Users/dev", dryRun: false)
+        await #expect(throws: SafetyViolation.isScanRoot("/Users/dev")) {
+            try await executor.execute(root, scanRoot: "/Users/dev", dryRun: false)
         }
         let rm = CleanupSuggestion(
             id: "bad", ruleID: "bad", name: "bad", summary: "bad", safety: .review,
@@ -291,31 +291,104 @@ struct CleanupTests {
             effect: .command(executable: "rm", arguments: ["-rf", "/"], display: "rm -rf /", previewArguments: nil),
             countsTowardEstimate: false
         )
-        #expect(throws: SafetyViolation.commandNotAllowed("rm")) {
-            try executor.execute(rm, scanRoot: "/Users/dev", dryRun: false)
+        await #expect(throws: SafetyViolation.commandNotAllowed("rm")) {
+            try await executor.execute(rm, scanRoot: "/Users/dev", dryRun: false)
         }
         let escaped = forged(path: "/Users/dev/../../etc/passwd", effect: .moveToTrash)
-        #expect(throws: SafetyViolation.self) {
-            try executor.execute(escaped, scanRoot: "/Users/dev", dryRun: false)
+        await #expect(throws: SafetyViolation.self) {
+            try await executor.execute(escaped, scanRoot: "/Users/dev", dryRun: false)
         }
         let notTrash = forged(path: "/Users/dev/notes.txt", effect: .emptyTrash)
-        #expect(throws: SafetyViolation.notTrashChild("/Users/dev/notes.txt")) {
-            try executor.execute(notTrash, scanRoot: "/Users/dev", dryRun: false)
+        await #expect(throws: SafetyViolation.notTrashChild("/Users/dev/notes.txt")) {
+            try await executor.execute(notTrash, scanRoot: "/Users/dev", dryRun: false)
         }
         #expect(performer.trashed.isEmpty)
         #expect(performer.deleted.isEmpty)
         #expect(performer.commands.isEmpty)
     }
 
-    @Test func partialTrashStopsAndKeepsTheBytesAlreadyMoved() throws {
+    @Test func partialTrashStopsAndKeepsTheBytesAlreadyMoved() async throws {
         let suggestion = sampleSuggestion()
         let performer = RecordingPerformer()
         performer.failAt = 2
-        let record = try CleanupExecutor(performer: performer).execute(suggestion, scanRoot: "/Users/dev", dryRun: false)
+        let record = try await CleanupExecutor(performer: performer).execute(suggestion, scanRoot: "/Users/dev", dryRun: false)
         #expect(!record.succeeded)
         #expect(record.bytesFreed == 100)
         #expect(record.paths.count == 1)
         #expect(performer.trashed.count == 1)
+    }
+
+    @Test func cancellingBetweenPathsKeepsWhatWasAlreadyRemoved() async throws {
+        let suggestion = sampleSuggestion()
+        let performer = RecordingPerformer()
+        let gate = RemovalGate()
+        let record = try await CleanupExecutor(performer: performer).execute(
+            suggestion,
+            scanRoot: "/Users/dev",
+            dryRun: false,
+            progress: { _ in gate.note() },
+            isCancelled: { gate.shouldStop }
+        )
+        #expect(!record.succeeded)
+        #expect(performer.trashed == ["/Users/dev/a.bin"])
+        #expect(record.bytesFreed == 100)
+        #expect(record.message.contains("stays removed"))
+    }
+
+    @Test func cancellingInsideADirectoryLeavesTheRestInPlace() async throws {
+        let root = "/proj/DerivedData"
+        let fs = MapFileSystem(nodes: [
+            root: entryMeta(directory: true, allocated: 512),
+            "\(root)/a": entryMeta(directory: false, allocated: 1_000),
+            "\(root)/b": entryMeta(directory: false, allocated: 4_000),
+        ], children: [
+            root: ["a", "b"],
+        ])
+        let suggestion = CleanupSuggestion(
+            id: "dd", ruleID: "xcode-derived-data", name: "DerivedData", summary: "build",
+            safety: .safe,
+            items: [CleanupPath(path: root, bytes: 5_000)],
+            headline: "Clear DerivedData",
+            actionDescription: "Delete 1 path permanently",
+            effect: .removePermanently,
+            countsTowardEstimate: true
+        )
+        let performer = RecordingPerformer()
+        let gate = RemovalGate()
+        let record = try await CleanupExecutor(performer: performer, fileSystem: fs).execute(
+            suggestion,
+            scanRoot: "/proj",
+            dryRun: false,
+            progress: { _ in gate.note() },
+            isCancelled: { gate.shouldStop }
+        )
+        #expect(!record.succeeded)
+        #expect(performer.deleted == ["\(root)/a"])
+        #expect(!performer.deleted.contains(root))
+        #expect(record.bytesFreed == 1_000)
+        #expect(record.message.contains("stays removed"))
+    }
+
+    @Test func cancellingACommandBeforeItStartsDoesNotRunIt() async throws {
+        let command = CleanupSuggestion(
+            id: "sim", ruleID: "simulator-unavailable", name: "Simulators", summary: "simctl",
+            safety: .safe,
+            items: [CleanupPath(path: "/Users/dev/Library/Developer/CoreSimulator/Devices", bytes: 10)],
+            headline: "Unavailable simulators",
+            actionDescription: "Run xcrun simctl delete unavailable",
+            effect: .command(executable: "xcrun", arguments: ["simctl", "delete", "unavailable"], display: "xcrun simctl delete unavailable", previewArguments: nil),
+            countsTowardEstimate: false
+        )
+        let performer = RecordingPerformer()
+        let record = try await CleanupExecutor(performer: performer).execute(
+            command,
+            scanRoot: "/Users/dev",
+            dryRun: false,
+            isCancelled: { true }
+        )
+        #expect(!record.succeeded)
+        #expect(performer.commands.isEmpty)
+        #expect(record.message.contains("Stopped before the command ran"))
     }
 
     @Test func pathNormalizationKeepsBoundaries() {
@@ -434,6 +507,58 @@ private func forged(path: String, effect: CleanupEffect) -> CleanupSuggestion {
         headline: "forged", actionDescription: "forged", effect: effect,
         countsTowardEstimate: false
     )
+}
+
+final class RemovalGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var notes = 0
+
+    func note() {
+        lock.lock()
+        notes += 1
+        lock.unlock()
+    }
+
+    var shouldStop: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return notes >= 1
+    }
+}
+
+private func entryMeta(directory: Bool, allocated: UInt64) -> EntryMetadata {
+    EntryMetadata(
+        isDirectory: directory, isSymlink: false, allocatedSize: allocated, logicalSize: allocated,
+        device: 1, inode: UInt64(allocated) &+ (directory ? 1 : 2), linkCount: 1, modified: nil
+    )
+}
+
+struct MapFileSystem: FileSystemProbe {
+    var nodes: [String: EntryMetadata]
+    var children: [String: [String]]
+
+    func entries(at path: String) async throws -> [String] {
+        guard let names = children[path] else { throw FileSystemError.notFound(path) }
+        return names
+    }
+
+    func listing(at path: String) async throws -> [ListedEntry] {
+        try await entries(at: path).map { name in
+            let child = Paths.join(path, name)
+            let kind: ListedKind
+            if let meta = nodes[child] {
+                kind = meta.isDirectory ? .directory : .file
+            } else {
+                kind = .unknown
+            }
+            return ListedEntry(name: name, kind: kind)
+        }
+    }
+
+    func metadata(at path: String) async throws -> EntryMetadata {
+        guard let meta = nodes[path] else { throw FileSystemError.notFound(path) }
+        return meta
+    }
 }
 
 final class RecordingPerformer: CleanupPerforming, @unchecked Sendable {

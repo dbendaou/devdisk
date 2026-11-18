@@ -30,6 +30,8 @@ enum MacActions {
 }
 
 struct MacCleanupPerformer: CleanupPerforming {
+    var isCancelled: @Sendable () -> Bool = { false }
+
     func moveToTrash(path: String) throws {
         try FileManager.default.trashItem(at: URL(fileURLWithPath: path), resultingItemURL: nil)
     }
@@ -87,13 +89,51 @@ struct MacCleanupPerformer: CleanupPerforming {
         try process.run()
         // readToEnd drains the pipe until the process closes it, so a large
         // brew or docker report cannot fill the pipe and stall waitUntilExit.
-        let data = try pipe.fileHandleForReading.readToEnd() ?? Data()
+        // Poll cancellation on another queue so a long command can be stopped.
+        let dataBox = DataBox()
+        let finishedReading = DispatchGroup()
+        finishedReading.enter()
+        let reader = Thread {
+            let data = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
+            dataBox.store(data)
+            finishedReading.leave()
+        }
+        reader.start()
+        while process.isRunning {
+            if isCancelled() {
+                process.terminate()
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
         process.waitUntilExit()
+        finishedReading.wait()
+        let data = dataBox.load()
         let text = String(data: data, encoding: .utf8) ?? ""
+        if isCancelled() {
+            throw CancellationError()
+        }
         if process.terminationStatus != 0 {
             throw CleanupFailure(message: "\(executable) exited with status \(process.terminationStatus).\n\(text)")
         }
         return text
+    }
+}
+
+final class DataBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    func store(_ data: Data) {
+        lock.lock()
+        self.data = data
+        lock.unlock()
+    }
+
+    func load() -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return data
     }
 }
 

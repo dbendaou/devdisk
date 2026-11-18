@@ -177,6 +177,44 @@ struct ScannerTests {
         }
     }
 
+    @Test func snapshotsShowMeasuredFilesWhileADirectoryIsStillPending() async throws {
+        let fs = BlockingMap(nodes: [
+            "/home": meta(directory: true, device: 1, allocated: 512),
+            "/home/a.bin": meta(directory: false, device: 1, allocated: 8_000),
+            "/home/slow": meta(directory: true, device: 1, allocated: 512),
+            "/home/slow/b.bin": meta(directory: false, device: 1, allocated: 2_000),
+        ], children: [
+            "/home": ["a.bin", "slow"],
+            "/home/slow": ["b.bin"],
+        ])
+        await fs.block("/home/slow")
+        let scanner = DirectoryScanner(fileSystem: fs, maxConcurrentDirectories: 2)
+        let stream = scanner.events(root: "/home", snapshotInterval: .milliseconds(50))
+        let watcher = Task { () -> ScanTree? in
+            for try await event in stream {
+                if case .snapshot(let tree) = event {
+                    let paths = paths(tree.root)
+                    if paths.contains("/home/a.bin") {
+                        return tree
+                    }
+                }
+                if case .finished = event { return nil }
+            }
+            return nil
+        }
+        let timeout = Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            watcher.cancel()
+        }
+        let early = try? await watcher.value
+        timeout.cancel()
+        let tree = try #require(early)
+        #expect(paths(tree.root).contains("/home/a.bin"))
+        let slow = try #require(tree.root.node(atPath: "/home/slow"))
+        #expect(slow.isPartial)
+        await fs.unblock("/home/slow")
+    }
+
     @Test func progressReportsFiles() async throws {
         let root = try makeTemp()
         defer { remove(root) }
@@ -204,6 +242,54 @@ private final class ProgressBox: @unchecked Sendable {
         lock.lock()
         files = max(files, progress.visitedFiles)
         lock.unlock()
+    }
+}
+
+private actor BlockingMap: FileSystemProbe {
+    var nodes: [String: EntryMetadata]
+    var children: [String: [String]]
+    private var blocked: Set<String> = []
+    private var waiters: [String: [CheckedContinuation<Void, Never>]] = [:]
+
+    init(nodes: [String: EntryMetadata], children: [String: [String]]) {
+        self.nodes = nodes
+        self.children = children
+    }
+
+    func block(_ path: String) { blocked.insert(path) }
+
+    func unblock(_ path: String) {
+        blocked.remove(path)
+        let pending = waiters.removeValue(forKey: path) ?? []
+        for waiter in pending { waiter.resume() }
+    }
+
+    func entries(at path: String) async throws -> [String] {
+        if blocked.contains(path) {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                if blocked.contains(path) {
+                    waiters[path, default: []].append(continuation)
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
+        guard let names = children[path] else { throw FileSystemError.notFound(path) }
+        return names
+    }
+
+    func listing(at path: String) async throws -> [ListedEntry] {
+        let names = try await entries(at: path)
+        return names.map { name in
+            let child = Paths.join(path, name)
+            let kind: ListedKind = nodes[child]?.isDirectory == true ? .directory : .file
+            return ListedEntry(name: name, kind: kind)
+        }
+    }
+
+    func metadata(at path: String) async throws -> EntryMetadata {
+        guard let meta = nodes[path] else { throw FileSystemError.notFound(path) }
+        return meta
     }
 }
 

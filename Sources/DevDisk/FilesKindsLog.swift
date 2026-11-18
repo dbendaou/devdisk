@@ -36,6 +36,9 @@ struct FilesScreen: View {
                             if node.isOtherVolume {
                                 Text("other volume").font(.caption2).foregroundStyle(.secondary)
                             }
+                            if node.isPartial {
+                                Text("measuring").font(.caption2).foregroundStyle(.secondary)
+                            }
                             if node.errorMessage != nil {
                                 Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
                             }

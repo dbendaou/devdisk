@@ -84,14 +84,14 @@ struct RootView: View {
                         Text("Estimated reclaimable")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Text(ByteFormat.string(model.report.estimatedReclaimableBytes))
+                        Text(ByteFormat.string(model.liveReport.estimatedReclaimableBytes))
                             .font(.title3.monospacedDigit().weight(.semibold))
                             .foregroundStyle(DevDiskTheme.reclaim)
-                        Text("Safe \(ByteFormat.string(model.report.safeBytes)) · Review \(ByteFormat.string(model.report.reviewBytes))")
+                        Text("Safe \(ByteFormat.string(model.liveReport.safeBytes)) · Review \(ByteFormat.string(model.liveReport.reviewBytes))")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
-                        if model.report.upperBoundBytes > 0 {
-                            Text("Includes up to \(ByteFormat.string(model.report.upperBoundBytes)) from container prunes")
+                        if model.liveReport.upperBoundBytes > 0 {
+                            Text("Includes up to \(ByteFormat.string(model.liveReport.upperBoundBytes)) from container prunes")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
@@ -105,7 +105,7 @@ struct RootView: View {
                     if let started = model.progress.startedAt {
                         Text(started, style: .timer)
                     }
-                    Text("\(model.progress.visitedFiles.formatted()) files · \(ByteFormat.string(model.progress.allocatedBytes)) · \(model.progress.suggestionsFound) found · \(ByteFormat.string(model.report.estimatedReclaimableBytes)) reclaimable · \(model.progress.currentPath)")
+                    Text("\(model.progress.visitedFiles.formatted()) files · \(ByteFormat.string(model.progress.allocatedBytes)) · \(model.progress.suggestionsFound) found · \(ByteFormat.string(model.liveReport.estimatedReclaimableBytes)) reclaimable · \(model.progress.currentPath)")
                 }
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -262,11 +262,7 @@ struct ConfirmationSheet: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
-                .disabled(model.isActing || (copy.requiresExtraAcknowledgement && !acknowledged))
-            }
-            if model.isActing {
-                ProgressView("Working…")
-                    .controlSize(.small)
+                .disabled(copy.requiresExtraAcknowledgement && !acknowledged)
             }
         }
         .padding(20)
@@ -302,14 +298,32 @@ struct ExploreScreen: View {
             .pickerStyle(.segmented)
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            if model.tree == nil {
+            .onAppear { model.ensureMap() }
+            .onChange(of: model.section) { _, section in
+                if section == .explore { model.ensureMap() }
+            }
+            .onChange(of: model.rootPath) { _, _ in
+                if model.section == .explore { model.ensureMap() }
+            }
+            if model.mapScanning {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Measuring folders. Blocks grow as each directory finishes.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Cancel map") { model.cancelMap() }
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+            } else if model.tree == nil {
                 HStack {
-                    Text(model.phase == .scanning ? "Cleanup is running. The map is a separate full walk." : "The map walks every file. Cleanup does not need it.")
+                    Text("The map walks every file. It can run while cleanup is scanning.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button("Build map") { model.scanExplore() }
-                        .disabled(model.phase == .scanning || model.rootPath == nil)
+                        .disabled(model.rootPath == nil)
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 8)

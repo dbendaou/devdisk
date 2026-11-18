@@ -14,6 +14,8 @@ public struct ScanNode: Sendable, Equatable, Hashable, Identifiable {
     public var countsAsDuplicateHardLink: Bool
     public var isOtherVolume: Bool
     public var errorMessage: String?
+    /// Listed, but its contents are not measured yet. The map draws this as a placeholder.
+    public var isPartial: Bool
     public var children: [ScanNode]
 
     public init(
@@ -29,6 +31,7 @@ public struct ScanNode: Sendable, Equatable, Hashable, Identifiable {
         countsAsDuplicateHardLink: Bool = false,
         isOtherVolume: Bool = false,
         errorMessage: String? = nil,
+        isPartial: Bool = false,
         children: [ScanNode] = []
     ) {
         self.id = id
@@ -43,6 +46,7 @@ public struct ScanNode: Sendable, Equatable, Hashable, Identifiable {
         self.countsAsDuplicateHardLink = countsAsDuplicateHardLink
         self.isOtherVolume = isOtherVolume
         self.errorMessage = errorMessage
+        self.isPartial = isPartial
         self.children = children
     }
 
@@ -158,6 +162,9 @@ public struct ScanProgress: Sendable, Equatable, Hashable {
 
 public enum ScanEvent: Sendable {
     case progress(ScanProgress)
+    /// A throttled look at the tree so far. Directories that are listed but not
+    /// measured yet are marked `isPartial`.
+    case snapshot(ScanTree)
     case finished(ScanTree)
 }
 

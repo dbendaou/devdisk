@@ -187,22 +187,39 @@ public enum ConfirmationBuilder {
     }
 }
 
+public struct RemovalProgress: Sendable, Equatable {
+    public var bytesFreed: UInt64
+    public var completedPaths: Int
+
+    public init(bytesFreed: UInt64, completedPaths: Int) {
+        self.bytesFreed = bytesFreed
+        self.completedPaths = completedPaths
+    }
+}
+
 public struct CleanupExecutor: Sendable {
     public var performer: any CleanupPerforming
+    /// When set, a directory is deleted child-by-child so a cancel can stop between files.
+    /// Already removed children stay removed. The directory is left in place if any child remains.
+    public var fileSystem: (any FileSystemProbe)?
 
-    public init(performer: any CleanupPerforming) {
+    public init(performer: any CleanupPerforming, fileSystem: (any FileSystemProbe)? = nil) {
         self.performer = performer
+        self.fileSystem = fileSystem
     }
 
     /// Safety checks run before any trash, delete, or command. A dry run records a log entry
     /// and does not call the performer. A mid-list failure stops and reports the bytes already moved.
+    /// `isCancelled` is checked between paths (and between files inside a directory when `fileSystem` is set).
     public func execute(
         _ suggestion: CleanupSuggestion,
         scanRoot: String,
         dryRun: Bool,
         now: Date = Date(),
-        trashInstead: Bool = false
-    ) throws -> RemovalRecord {
+        trashInstead: Bool = false,
+        progress: (@Sendable (RemovalProgress) -> Void)? = nil,
+        isCancelled: @escaping @Sendable () -> Bool = { false }
+    ) async throws -> RemovalRecord {
         if suggestion.items.isEmpty {
             throw SafetyViolation.emptySelection
         }
@@ -252,25 +269,28 @@ public struct CleanupExecutor: Sendable {
 
         switch suggestion.effect {
         case .removePermanently where trashInstead:
-            return apply(suggestion, now: now, trashed: true) { path in
+            return await apply(suggestion, now: now, trashed: true, progress: progress, isCancelled: isCancelled) { path in
                 try performer.moveToTrash(path: path)
             }
         case .removePermanently:
-            return apply(suggestion, now: now) { path in
+            return await apply(suggestion, now: now, progress: progress, isCancelled: isCancelled) { path in
                 try performer.removePermanently(path: path)
             }
         case .moveToTrash:
-            return apply(suggestion, now: now, trashed: true) { path in
+            return await apply(suggestion, now: now, trashed: true, progress: progress, isCancelled: isCancelled) { path in
                 try performer.moveToTrash(path: path)
             }
         case .emptyTrash:
-            return apply(suggestion, now: now) { path in
+            return await apply(suggestion, now: now, progress: progress, isCancelled: isCancelled) { path in
                 try performer.removePermanently(path: path)
             }
         case .command(let executable, let arguments, let display, _):
+            if isCancelled() {
+                return stopped(suggestion, now: now, freed: 0, done: [], before: "Stopped before the command ran.")
+            }
             return runCommand(suggestion, now: now, executable: executable, arguments: arguments, display: display, dryRun: false)
         case .commandForEach(let executable, let arguments, let display, let usesParent):
-            return runForEach(suggestion, now: now, executable: executable, arguments: arguments, display: display, usesParent: usesParent)
+            return runForEach(suggestion, now: now, executable: executable, arguments: arguments, display: display, usesParent: usesParent, isCancelled: isCancelled)
         }
     }
 
@@ -312,10 +332,15 @@ public struct CleanupExecutor: Sendable {
         executable: String,
         arguments: [String],
         display: String,
-        usesParent: Bool
+        usesParent: Bool,
+        isCancelled: @escaping @Sendable () -> Bool = { false }
     ) -> RemovalRecord {
         var done: [String] = []
         for item in suggestion.items {
+            if isCancelled() {
+                let prefix = done.isEmpty ? "Stopped before the command ran." : "Stopped after \(done.count) repositories."
+                return record(suggestion, now: now, bytesFreed: 0, paths: done, dryRun: false, succeeded: false, message: "\(prefix) What was already removed stays removed.")
+            }
             let target = usesParent ? Paths.parent(item.path) : item.path
             let resolved = arguments.map { $0.replacingOccurrences(of: "{path}", with: target) }
             do {
@@ -342,27 +367,63 @@ public struct CleanupExecutor: Sendable {
         _ suggestion: CleanupSuggestion,
         now: Date,
         trashed: Bool = false,
+        progress: (@Sendable (RemovalProgress) -> Void)?,
+        isCancelled: @escaping @Sendable () -> Bool,
         action: (String) throws -> Void
-    ) -> RemovalRecord {
+    ) async -> RemovalRecord {
         var freed: UInt64 = 0
         var done: [String] = []
         for item in suggestion.items {
-            do {
-                try action(item.path)
-                freed += item.bytes
-                done.append(item.path)
-            } catch {
-                let message = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-                let prefix = done.isEmpty ? "Stopped before anything was removed." : "Stopped after \(done.count) paths (\(ByteFormat.string(freed)))."
-                return record(
-                    suggestion,
-                    now: now,
-                    bytesFreed: freed,
-                    paths: done,
-                    dryRun: false,
-                    succeeded: false,
-                    message: "\(prefix) \(message)"
+            if isCancelled() {
+                return stopped(suggestion, now: now, freed: freed, done: done, before: "Stopped before anything was removed.")
+            }
+            if let fileSystem {
+                let outcome = await deleteTree(
+                    path: item.path,
+                    bytesHint: item.bytes,
+                    fileSystem: fileSystem,
+                    freed: &freed,
+                    done: &done,
+                    progress: progress,
+                    isCancelled: isCancelled,
+                    action: action
                 )
+                if let stop = outcome {
+                    switch stop {
+                    case .cancelled:
+                        return stopped(suggestion, now: now, freed: freed, done: done, before: "Stopped before anything was removed.")
+                    case .failed(let message):
+                        let prefix = done.isEmpty ? "Stopped before anything was removed." : "Stopped after \(done.count) paths (\(ByteFormat.string(freed)))."
+                        return record(
+                            suggestion,
+                            now: now,
+                            bytesFreed: freed,
+                            paths: done,
+                            dryRun: false,
+                            succeeded: false,
+                            message: "\(prefix) \(message)"
+                        )
+                    }
+                }
+            } else {
+                do {
+                    try action(item.path)
+                    freed += item.bytes
+                    done.append(item.path)
+                    progress?(RemovalProgress(bytesFreed: freed, completedPaths: done.count))
+                } catch {
+                    let message = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+                    let prefix = done.isEmpty ? "Stopped before anything was removed." : "Stopped after \(done.count) paths (\(ByteFormat.string(freed)))."
+                    return record(
+                        suggestion,
+                        now: now,
+                        bytesFreed: freed,
+                        paths: done,
+                        dryRun: false,
+                        succeeded: false,
+                        message: "\(prefix) \(message)"
+                    )
+                }
             }
         }
         let permanently = !trashed && (suggestion.effect == .removePermanently || suggestion.effect == .emptyTrash)
@@ -376,6 +437,114 @@ public struct CleanupExecutor: Sendable {
             dryRun: false,
             succeeded: true,
             message: "\(verb) \(done.count) \(done.count == 1 ? "path" : "paths")\(destination) (\(ByteFormat.string(freed)))."
+        )
+    }
+
+    private enum TreeStop {
+        case cancelled
+        case failed(String)
+    }
+
+    /// Deletes a file, or a directory's children and then the directory.
+    /// Cancelled or failed walks do not remove an ancestor that still has children.
+    private func deleteTree(
+        path: String,
+        bytesHint: UInt64,
+        fileSystem: any FileSystemProbe,
+        freed: inout UInt64,
+        done: inout [String],
+        progress: (@Sendable (RemovalProgress) -> Void)?,
+        isCancelled: @escaping @Sendable () -> Bool,
+        action: (String) throws -> Void
+    ) async -> TreeStop? {
+        if isCancelled() { return .cancelled }
+        let meta: EntryMetadata
+        do {
+            meta = try await fileSystem.metadata(at: path)
+        } catch is CancellationError {
+            return .cancelled
+        } catch let error as FileSystemError where isNotFound(error) {
+            return nil
+        } catch {
+            return oneShot(path, bytes: bytesHint, freed: &freed, done: &done, progress: progress, action: action)
+        }
+        if meta.isSymlink || !meta.isDirectory {
+            return oneShot(path, bytes: meta.allocatedSize, freed: &freed, done: &done, progress: progress, action: action)
+        }
+        let listed: [ListedEntry]
+        do {
+            listed = try await fileSystem.listing(at: path)
+        } catch is CancellationError {
+            return .cancelled
+        } catch {
+            return oneShot(path, bytes: max(meta.allocatedSize, bytesHint), freed: &freed, done: &done, progress: progress, action: action)
+        }
+        for entry in listed.sorted(by: { $0.name < $1.name }) {
+            if isCancelled() { return .cancelled }
+            let child = Paths.join(path, entry.name)
+            if let stop = await deleteTree(
+                path: child,
+                bytesHint: 0,
+                fileSystem: fileSystem,
+                freed: &freed,
+                done: &done,
+                progress: progress,
+                isCancelled: isCancelled,
+                action: action
+            ) {
+                return stop
+            }
+        }
+        if isCancelled() { return .cancelled }
+        return oneShot(path, bytes: meta.allocatedSize, freed: &freed, done: &done, progress: progress, action: action)
+    }
+
+    private func isNotFound(_ error: FileSystemError) -> Bool {
+        if case .notFound = error { return true }
+        return false
+    }
+
+    private func oneShot(
+        _ path: String,
+        bytes: UInt64,
+        freed: inout UInt64,
+        done: inout [String],
+        progress: (@Sendable (RemovalProgress) -> Void)?,
+        action: (String) throws -> Void
+    ) -> TreeStop? {
+        do {
+            try action(path)
+            freed += bytes
+            done.append(path)
+            progress?(RemovalProgress(bytesFreed: freed, completedPaths: done.count))
+            return nil
+        } catch {
+            let message = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+            return .failed(message)
+        }
+    }
+
+    private func stopped(
+        _ suggestion: CleanupSuggestion,
+        now: Date,
+        freed: UInt64,
+        done: [String],
+        before: String
+    ) -> RemovalRecord {
+        let message: String
+        if done.isEmpty {
+            message = before
+        } else {
+            message = "Stopped. Freed \(ByteFormat.string(freed)). What was already removed stays removed."
+        }
+        return record(
+            suggestion,
+            now: now,
+            bytesFreed: freed,
+            paths: done,
+            dryRun: false,
+            succeeded: false,
+            message: message
         )
     }
 

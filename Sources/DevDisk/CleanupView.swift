@@ -147,11 +147,36 @@ private struct CleanupCard: View {
                     Text("\(suggestion.paths.count) \(suggestion.paths.count == 1 ? "path" : "paths")")
                         .font(.caption)
                 }
-                HStack {
-                    Button("Preview") { model.ask(suggestion, dryRun: true) }
-                    if !model.previewOnly {
-                        Button(primaryTitle) { model.ask(suggestion, dryRun: false) }
-                            .buttonStyle(.borderedProminent)
+                HStack(spacing: 10) {
+                    if let activity = model.rowActivity[suggestion.id] {
+                        switch activity {
+                        case .running:
+                            ProgressView()
+                                .controlSize(.small)
+                            Text(activity.caption)
+                                .font(.callout)
+                                .lineLimit(1)
+                            Spacer()
+                            Button {
+                                model.cancelRow(suggestion.id)
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Stop. What is already removed stays removed.")
+                        case .finished(_, let success, _):
+                            Text(activity.caption)
+                                .font(.callout)
+                                .foregroundStyle(success ? DevDiskTheme.reclaim : Color.red)
+                                .lineLimit(3)
+                            if !success {
+                                Spacer()
+                                actionButtons
+                            }
+                        }
+                    } else {
+                        actionButtons
                     }
                 }
             }
@@ -160,6 +185,15 @@ private struct CleanupCard: View {
         .background(.background, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.secondary.opacity(0.15)))
         .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    @ViewBuilder
+    private var actionButtons: some View {
+        Button("Preview") { model.ask(suggestion, dryRun: true) }
+        if !model.previewOnly {
+            Button(primaryTitle) { model.ask(suggestion, dryRun: false) }
+                .buttonStyle(.borderedProminent)
+        }
     }
 
     private var primaryTitle: String {

@@ -19,6 +19,52 @@ public struct DirectoryScanner: Sendable {
         root: String,
         progress: (@Sendable (ScanProgress) -> Void)? = nil
     ) async throws -> ScanTree {
+        try await scanRoot(root: root, progress: progress, draft: nil)
+    }
+
+    /// Progress, throttled snapshots of the tree so far, then the finished tree.
+    /// Cancelling the consuming task cancels the scan. `snapshotInterval` is how
+    /// often a new partial tree is published after the first one.
+    public func events(
+        root: String,
+        snapshotInterval: Duration = .milliseconds(750)
+    ) -> AsyncThrowingStream<ScanEvent, Error> {
+        let root = Paths.normalize(root)
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                let draft = TreeDraft(root: root)
+                let ticker = Task {
+                    while !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: 100_000_000)
+                        if let raw = await draft.takeSnapshot(interval: snapshotInterval) {
+                            continuation.yield(.snapshot(finalize(raw)))
+                        }
+                    }
+                }
+                do {
+                    let tree = try await self.scanRoot(root: root, progress: { value in
+                        continuation.yield(.progress(value))
+                    }, draft: draft)
+                    ticker.cancel()
+                    continuation.yield(.snapshot(tree))
+                    continuation.yield(.finished(tree))
+                    continuation.finish()
+                } catch {
+                    ticker.cancel()
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+    }
+
+    private func scanRoot(
+        root: String,
+        progress: (@Sendable (ScanProgress) -> Void)?,
+        draft: TreeDraft?
+    ) async throws -> ScanTree {
         let root = Paths.normalize(root)
         let gate = DirectoryGate(limit: maxConcurrentDirectories)
         let meter = ScanMeter(handler: progress)
@@ -30,7 +76,8 @@ public struct DirectoryScanner: Sendable {
                 rootDevice: nil,
                 gate: gate,
                 meter: meter,
-                ledger: ledger
+                ledger: ledger,
+                draft: draft
             )
             let tree = finalize(raw)
             await meter.emit()
@@ -40,33 +87,14 @@ public struct DirectoryScanner: Sendable {
         }
     }
 
-    /// Progress events followed by the finished tree. Cancelling the consuming task cancels the scan.
-    public func events(root: String) -> AsyncThrowingStream<ScanEvent, Error> {
-        AsyncThrowingStream { continuation in
-            let task = Task {
-                do {
-                    let tree = try await self.scan(root: root) { value in
-                        continuation.yield(.progress(value))
-                    }
-                    continuation.yield(.finished(tree))
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-            continuation.onTermination = { _ in
-                task.cancel()
-            }
-        }
-    }
-
     private func scanDirectory(
         path: String,
         name: String,
         rootDevice: UInt64?,
         gate: DirectoryGate,
         meter: ScanMeter,
-        ledger: InodeLedger
+        ledger: InodeLedger,
+        draft: TreeDraft?
     ) async throws -> RawNode {
         try Task.checkCancellation()
         try await gate.acquire()
@@ -87,8 +115,10 @@ public struct DirectoryScanner: Sendable {
 
         switch inspected {
         case .finished(let node):
+            await draft?.complete(node)
             return node
         case .directory(var node, let subdirs, let device):
+            await draft?.seed(directory: node, subdirs: subdirs)
             try await withThrowingTaskGroup(of: RawNode.self) { group in
                 for sub in subdirs {
                     group.addTask {
@@ -98,7 +128,8 @@ public struct DirectoryScanner: Sendable {
                             rootDevice: device,
                             gate: gate,
                             meter: meter,
-                            ledger: ledger
+                            ledger: ledger,
+                            draft: draft
                         )
                     }
                 }
@@ -106,6 +137,7 @@ public struct DirectoryScanner: Sendable {
                     node.children.append(child)
                 }
             }
+            await draft?.complete(node)
             return node
         }
     }
@@ -242,7 +274,7 @@ public struct DirectoryScanner: Sendable {
         await meter.add(bytes: meta.allocatedSize)
 
         var files: [RawNode] = []
-        var subdirs: [(name: String, path: String)] = []
+        var subdirs: [Subdir] = []
         for childName in names {
             try Task.checkCancellation()
             let childPath = Paths.join(path, childName)
@@ -280,7 +312,13 @@ public struct DirectoryScanner: Sendable {
                 )
                 files.append(node)
             } else {
-                subdirs.append((childName, childPath))
+                subdirs.append(Subdir(
+                    name: childName,
+                    path: childPath,
+                    allocated: childMeta.allocatedSize,
+                    logical: childMeta.logicalSize,
+                    modified: childMeta.modified
+                ))
             }
         }
 
@@ -394,16 +432,110 @@ private struct RawNode {
     var isDirectory: Bool
     var isSymlink: Bool
     var isOtherVolume: Bool
-    var errorMessage: String?
-    var children: [RawNode]
-    var totalAllocated: UInt64 = 0
+        var errorMessage: String?
+        var children: [RawNode]
+        var isPartial: Bool = false
+        var totalAllocated: UInt64 = 0
     var totalLogical: UInt64 = 0
     var duplicate = false
 }
 
+private struct Subdir: Sendable {
+    var name: String
+    var path: String
+    var allocated: UInt64
+    var logical: UInt64
+    var modified: Date?
+}
+
 private enum Inspected {
     case finished(RawNode)
-    case directory(RawNode, [(name: String, path: String)], UInt64)
+    case directory(RawNode, [Subdir], UInt64)
+}
+
+/// Growing copy of the walk. A directory is seeded with its files and a
+/// placeholder for each subdirectory, then replaced when that subdirectory returns.
+private actor TreeDraft {
+    let root: String
+    private var latest: [String: RawNode] = [:]
+    private var dirty = false
+    private var lastPublish: ContinuousClock.Instant?
+    private let clock = ContinuousClock()
+
+    init(root: String) {
+        self.root = root
+    }
+
+    func seed(directory: RawNode, subdirs: [Subdir]) {
+        var children = directory.children
+        for file in directory.children {
+            latest[file.path] = file
+        }
+        for sub in subdirs {
+            var placeholder = RawNode(
+                name: sub.name,
+                path: sub.path,
+                ownAllocated: max(sub.allocated, 512),
+                ownLogical: max(sub.logical, 512),
+                pendingLink: nil,
+                modified: sub.modified,
+                isDirectory: true,
+                isSymlink: false,
+                isOtherVolume: false,
+                errorMessage: nil,
+                children: []
+            )
+            placeholder.isPartial = true
+            placeholder.totalAllocated = placeholder.ownAllocated
+            placeholder.totalLogical = placeholder.ownLogical
+            latest[sub.path] = placeholder
+            children.append(placeholder)
+        }
+        var node = directory
+        node.children = children
+        latest[node.path] = node
+        dirty = true
+    }
+
+    func complete(_ node: RawNode) {
+        latest[node.path] = node
+        dirty = true
+    }
+
+    /// The first dirty tree is returned immediately. Later ones wait for `interval`.
+    func takeSnapshot(interval: Duration) -> RawNode? {
+        guard dirty, latest[root] != nil else { return nil }
+        let now = clock.now
+        if let lastPublish, now - lastPublish < interval {
+            return nil
+        }
+        dirty = false
+        lastPublish = now
+        return materialize(root)
+    }
+
+    private func materialize(_ path: String) -> RawNode? {
+        guard var node = latest[path] else { return nil }
+        if node.isPartial {
+            return node
+        }
+        node.children = node.children.compactMap { materialize($0.path) }
+        var allocated = node.ownAllocated
+        var logical = node.ownLogical
+        for child in node.children {
+            allocated += child.totalAllocated
+            logical += child.totalLogical
+        }
+        node.totalAllocated = allocated
+        node.totalLogical = logical
+        node.children.sort { lhs, rhs in
+            let left = lhs.totalAllocated
+            let right = rhs.totalAllocated
+            if left != right { return left > right }
+            return lhs.name < rhs.name
+        }
+        return node
+    }
 }
 
 private actor InodeLedger {
@@ -571,7 +703,7 @@ private func fold(_ node: inout RawNode, winners: [InodeKey: String]) -> (UInt64
 }
 
 private func assign(_ node: inout RawNode, next: inout Int) -> ScanNode {
-    let id = next
+    let id = stableID(node.path)
     next += 1
     let children = node.children.indices.map { index in
         assign(&node.children[index], next: &next)
@@ -590,8 +722,19 @@ private func assign(_ node: inout RawNode, next: inout Int) -> ScanNode {
         countsAsDuplicateHardLink: node.duplicate,
         isOtherVolume: node.isOtherVolume,
         errorMessage: node.errorMessage,
+        isPartial: node.isPartial,
         children: children
     )
+}
+
+private func stableID(_ path: String) -> Int {
+    var hash: UInt64 = 14_695_981_039_346_656_037
+    for byte in path.utf8 {
+        hash ^= UInt64(byte)
+        hash &*= 1_099_511_628_211
+    }
+    let value = Int(truncatingIfNeeded: hash)
+    return value == 0 ? 1 : value
 }
 
 private func stats(of node: ScanNode) -> ScanStats {

@@ -107,7 +107,7 @@ struct CleanupScanTests {
         #expect(remaining.estimatedReclaimableBytes == 9_000)
     }
 
-    @Test func permanentDeleteIsTheDefaultAndReviewNeedsExtraConfirmation() throws {
+    @Test func permanentDeleteIsTheDefaultAndReviewNeedsExtraConfirmation() async throws {
         let modules = try #require(CleanupCatalog.all.first { $0.id == "node-modules" })
         #expect(modules.effect == .removePermanently)
         let databases = CleanupCatalog.all.filter { $0.ecosystem == .databases }
@@ -126,12 +126,12 @@ struct CleanupScanTests {
         #expect(copy.requiresExtraAcknowledgement)
 
         let performer = RecordingPerformer()
-        let record = try CleanupExecutor(performer: performer).execute(suggestion, scanRoot: "/home", dryRun: false)
+        let record = try await CleanupExecutor(performer: performer).execute(suggestion, scanRoot: "/home", dryRun: false)
         #expect(performer.deleted == ["/home/db"])
         #expect(performer.trashed.isEmpty)
         #expect(record.message.contains("permanently"))
 
-        _ = try CleanupExecutor(performer: performer).execute(suggestion, scanRoot: "/home", dryRun: false, trashInstead: true)
+        _ = try await CleanupExecutor(performer: performer).execute(suggestion, scanRoot: "/home", dryRun: false, trashInstead: true)
         #expect(performer.trashed == ["/home/db"])
     }
 }
