@@ -54,7 +54,8 @@ struct FilesScreen: View {
                             if node.isDirectory {
                                 Button("Show on map") {
                                     model.zoomPath = node.path
-                                    model.section = .map
+                                    model.explorePane = .map
+                                    model.section = .explore
                                 }
                             }
                         }

@@ -277,11 +277,10 @@ enum ExplorePane: String, CaseIterable, Identifiable {
 
 struct ExploreScreen: View {
     @Bindable var model: AppModel
-    @State private var pane: ExplorePane = .map
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Explore", selection: $pane) {
+            Picker("Explore", selection: $model.explorePane) {
                 ForEach(ExplorePane.allCases) { item in
                     Text(item.title).tag(item)
                 }
@@ -289,7 +288,7 @@ struct ExploreScreen: View {
             .pickerStyle(.segmented)
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            switch pane {
+            switch model.explorePane {
             case .map: TreemapScreen(model: model)
             case .files: FilesScreen(model: model)
             case .kinds: KindsScreen(model: model)

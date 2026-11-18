@@ -60,6 +60,7 @@ struct PendingCleanup: Identifiable {
 @Observable
 final class AppModel {
     var section: AppSection = .cleanup
+    var explorePane: ExplorePane = .map
     var staleAfterDays = CleanupCatalog.defaultStaleDays
     var phase: ScanPhase = .idle
     var rootPath: String?
