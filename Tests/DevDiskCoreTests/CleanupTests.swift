@@ -332,6 +332,7 @@ struct CleanupTests {
         #expect(!record.succeeded)
         #expect(performer.trashed == ["/Users/dev/a.bin"])
         #expect(record.bytesFreed == 100)
+        #expect(record.message.contains("Stopped – freed"))
         #expect(record.message.contains("stays removed"))
     }
 
@@ -366,6 +367,7 @@ struct CleanupTests {
         #expect(performer.deleted == ["\(root)/a"])
         #expect(!performer.deleted.contains(root))
         #expect(record.bytesFreed == 1_000)
+        #expect(record.message.contains("Stopped – freed"))
         #expect(record.message.contains("stays removed"))
     }
 

@@ -62,10 +62,12 @@ public actor CleanupScanSettings {
 public struct CleanupScanner: Sendable {
     public var fileSystem: any FileSystemProbe
     public var maxConcurrent: Int
+    public var stop: ScanStop
 
-    public init(fileSystem: any FileSystemProbe = POSIXFileSystem(), maxConcurrent: Int = 32) {
+    public init(fileSystem: any FileSystemProbe = POSIXFileSystem(), maxConcurrent: Int = 32, stop: ScanStop = ScanStop()) {
         self.fileSystem = fileSystem
         self.maxConcurrent = max(1, maxConcurrent)
+        self.stop = stop
     }
 
     public func events(
@@ -131,6 +133,7 @@ public struct CleanupScanner: Sendable {
                     continuation.yield(.finished)
                     continuation.finish()
                     } onCancel: {
+                        self.stop.stop()
                         Task { await gate.cancelAndDrain() }
                     }
                 } catch is CancellationError {
@@ -139,7 +142,9 @@ public struct CleanupScanner: Sendable {
                     continuation.finish(throwing: error)
                 }
             }
+            let stop = self.stop
             continuation.onTermination = { _ in
+                stop.stop()
                 task.cancel()
             }
         }
@@ -200,7 +205,7 @@ public struct CleanupScanner: Sendable {
         meter: CleanupMeter,
         yield: @escaping @Sendable (CleanupSuggestion) -> Void
     ) async throws {
-        try Task.checkCancellation()
+        try stop.check()
         let suppressed = await suppressions.isSuppressed(path)
         let claimed = await claims.isClaimed(path)
         if suppressed || claimed { return }
@@ -234,7 +239,7 @@ public struct CleanupScanner: Sendable {
             return
         }
         for entry in listed {
-            try Task.checkCancellation()
+            try stop.check()
             let child = Paths.join(path, entry.name)
             if await suppressions.isSuppressed(child) { continue }
             let kind = try await resolvedKind(entry, at: child)
@@ -488,6 +493,7 @@ public struct CleanupScanner: Sendable {
         meter: CleanupMeter,
         yield: @escaping @Sendable (CleanupSuggestion) -> Void
     ) async {
+        if stop.isStopped || Task.isCancelled { return }
         if await suppressions.isSuppressed(path) { return }
         if PathSafety.violation(for: path, scanRoot: root) != nil { return }
         guard await claims.claim(path) else { return }
@@ -499,7 +505,7 @@ public struct CleanupScanner: Sendable {
         }
         guard meta.isDirectory, !meta.isSymlink else { return }
         if meta.device != device && device != 0 { return }
-        let size = await DirectorySizer(fileSystem: fileSystem, gate: gate, meter: meter).allocatedSize(of: path, device: meta.device)
+        let size = await DirectorySizer(fileSystem: fileSystem, gate: gate, meter: meter, stop: stop).allocatedSize(of: path, device: meta.device)
         if await suppressions.isSuppressed(path) { return }
         let floor = byteFloor ?? rule.minimumBytes
         guard size >= floor else { return }
@@ -601,13 +607,14 @@ private struct DirectorySizer: Sendable {
     var fileSystem: any FileSystemProbe
     var gate: DirectoryGate
     var meter: CleanupMeter
+    var stop: ScanStop
 
     func allocatedSize(of path: String, device: UInt64) async -> UInt64 {
         await size(path, device: device, isRoot: true)
     }
 
     private func size(_ path: String, device: UInt64, isRoot: Bool) async -> UInt64 {
-        if Task.isCancelled { return 0 }
+        if stop.isStopped || Task.isCancelled { return 0 }
         let meta: EntryMetadata
         do {
             try await gate.acquire()
@@ -645,6 +652,10 @@ private struct DirectorySizer: Sendable {
         var childSum: UInt64 = 0
         await withTaskGroup(of: UInt64.self) { group in
             for entry in listed {
+                if stop.isStopped || Task.isCancelled {
+                    group.cancelAll()
+                    break
+                }
                 let child = Paths.join(path, entry.name)
                 group.addTask {
                     await self.size(child, device: device, isRoot: false)

@@ -158,6 +158,31 @@ struct ScannerTests {
         #expect(tree.stats.otherVolumeCount == 1)
     }
 
+    @Test func cancellingALargeTreeReturnsQuickly() async throws {
+        let counter = ListingCounter()
+        let fs = SlowWideTree(directories: 400, pauseNanoseconds: 80_000_000, counter: counter)
+        let stop = ScanStop()
+        let scanner = DirectoryScanner(fileSystem: fs, maxConcurrentDirectories: 8, stop: stop)
+        let task = Task {
+            try await scanner.scan(root: "/wide")
+        }
+        try await Task.sleep(nanoseconds: 40_000_000)
+        let started = ContinuousClock.now
+        stop.stop()
+        task.cancel()
+        do {
+            _ = try await task.value
+            Issue.record("Expected the scan to stop")
+        } catch is CancellationError {
+        } catch {
+            Issue.record("Unexpected \(error)")
+        }
+        let elapsed = ContinuousClock.now - started
+        #expect(elapsed < .seconds(2))
+        let listed = counter.value
+        #expect(listed < 400)
+    }
+
     @Test func cancellationStopsTheWalk() async throws {
         let fs = MemoryFileSystem(nodes: [
             "/hang": meta(directory: true, device: 1, allocated: 4096),
@@ -242,6 +267,59 @@ private final class ProgressBox: @unchecked Sendable {
         lock.lock()
         files = max(files, progress.visitedFiles)
         lock.unlock()
+    }
+}
+
+final class ListingCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    func bump() {
+        lock.lock()
+        count += 1
+        lock.unlock()
+    }
+}
+
+struct SlowWideTree: FileSystemProbe {
+    var directories: Int
+    var pauseNanoseconds: UInt64
+    var counter: ListingCounter
+
+    func entries(at path: String) async throws -> [String] {
+        try await listing(at: path).map(\.name)
+    }
+
+    func listing(at path: String) async throws -> [ListedEntry] {
+        try Task.checkCancellation()
+        if path != "/wide" {
+            try await Task.sleep(nanoseconds: pauseNanoseconds)
+            try Task.checkCancellation()
+        }
+        counter.bump()
+        if path == "/wide" {
+            return (0..<directories).map { ListedEntry(name: "d\($0)", kind: .directory) }
+        }
+        return [ListedEntry(name: "file.bin", kind: .file)]
+    }
+
+    func metadata(at path: String) async throws -> EntryMetadata {
+        let isDirectory = !path.hasSuffix("/file.bin")
+        return EntryMetadata(
+            isDirectory: isDirectory,
+            isSymlink: false,
+            allocatedSize: isDirectory ? 512 : 64,
+            logicalSize: isDirectory ? 512 : 64,
+            device: 1,
+            inode: UInt64(bitPattern: Int64(path.hashValue)),
+            linkCount: 1,
+            modified: nil
+        )
     }
 }
 

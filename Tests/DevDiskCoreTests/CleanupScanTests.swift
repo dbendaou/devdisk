@@ -3,6 +3,26 @@ import Testing
 @testable import DevDiskCore
 
 struct CleanupScanTests {
+    @Test func cancellingTheCleanupScanStopsAWideTreeQuickly() async throws {
+        let counter = ListingCounter()
+        let fs = SlowWideTree(directories: 200, pauseNanoseconds: 80_000_000, counter: counter)
+        let scanner = CleanupScanner(fileSystem: fs, maxConcurrent: 4)
+        let task = Task {
+            for try await _ in scanner.events(root: "/wide", byteFloor: 1, staleAfterDays: 0) {}
+        }
+        try await Task.sleep(nanoseconds: 30_000_000)
+        let started = ContinuousClock.now
+        task.cancel()
+        do {
+            try await task.value
+        } catch is CancellationError {
+        } catch {
+            Issue.record("Unexpected \(error)")
+        }
+        #expect(ContinuousClock.now - started < .seconds(2))
+        #expect(counter.value < 200)
+    }
+
     @Test func knownCachesAppearBeforeTheRestOfTheWalk() async throws {
         let fs = BlockingFileSystem()
         await fs.addDirectory("/home", children: [".npm", "Desktop"])

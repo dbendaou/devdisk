@@ -535,7 +535,7 @@ public struct CleanupExecutor: Sendable {
         if done.isEmpty {
             message = before
         } else {
-            message = "Stopped. Freed \(ByteFormat.string(freed)). What was already removed stays removed."
+            message = "Stopped – freed \(ByteFormat.string(freed)). What was already removed stays removed."
         }
         return record(
             suggestion,

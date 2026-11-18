@@ -9,10 +9,16 @@ import Foundation
 public struct DirectoryScanner: Sendable {
     public var fileSystem: any FileSystemProbe
     public var maxConcurrentDirectories: Int
+    public var stop: ScanStop
 
-    public init(fileSystem: any FileSystemProbe = POSIXFileSystem(), maxConcurrentDirectories: Int = 16) {
+    public init(
+        fileSystem: any FileSystemProbe = POSIXFileSystem(),
+        maxConcurrentDirectories: Int = 16,
+        stop: ScanStop = ScanStop()
+    ) {
         self.fileSystem = fileSystem
         self.maxConcurrentDirectories = max(1, maxConcurrentDirectories)
+        self.stop = stop
     }
 
     public func scan(
@@ -34,8 +40,9 @@ public struct DirectoryScanner: Sendable {
             let task = Task {
                 let draft = TreeDraft(root: root)
                 let ticker = Task {
-                    while !Task.isCancelled {
+                    while !Task.isCancelled && !self.stop.isStopped {
                         try? await Task.sleep(nanoseconds: 100_000_000)
+                        if self.stop.isStopped || Task.isCancelled { break }
                         if let raw = await draft.takeSnapshot(interval: snapshotInterval) {
                             continuation.yield(.snapshot(finalize(raw)))
                         }
@@ -54,7 +61,9 @@ public struct DirectoryScanner: Sendable {
                     continuation.finish(throwing: error)
                 }
             }
+            let stop = self.stop
             continuation.onTermination = { _ in
+                stop.stop()
                 task.cancel()
             }
         }
@@ -83,6 +92,7 @@ public struct DirectoryScanner: Sendable {
             await meter.emit()
             return tree
         } onCancel: {
+            self.stop.stop()
             Task { await gate.cancelAndDrain() }
         }
     }
@@ -96,7 +106,7 @@ public struct DirectoryScanner: Sendable {
         ledger: InodeLedger,
         draft: TreeDraft?
     ) async throws -> RawNode {
-        try Task.checkCancellation()
+        try stop.check()
         try await gate.acquire()
         let inspected: Inspected
         do {
@@ -121,6 +131,7 @@ public struct DirectoryScanner: Sendable {
             await draft?.seed(directory: node, subdirs: subdirs)
             try await withThrowingTaskGroup(of: RawNode.self) { group in
                 for sub in subdirs {
+                    try stop.check()
                     group.addTask {
                         try await scanDirectory(
                             path: sub.path,
@@ -276,7 +287,7 @@ public struct DirectoryScanner: Sendable {
         var files: [RawNode] = []
         var subdirs: [Subdir] = []
         for childName in names {
-            try Task.checkCancellation()
+            try stop.check()
             let childPath = Paths.join(path, childName)
             let childMeta: EntryMetadata
             do {

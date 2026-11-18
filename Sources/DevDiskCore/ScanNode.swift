@@ -160,6 +160,33 @@ public struct ScanProgress: Sendable, Equatable, Hashable {
     }
 }
 
+/// Shared cancel switch for a scan. Unstructured tasks and `Task.detached` work
+/// do not inherit the caller's cancellation, so every directory entry also checks this.
+public final class ScanStop: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stopped = false
+
+    public init() {}
+
+    public func stop() {
+        lock.lock()
+        stopped = true
+        lock.unlock()
+    }
+
+    public var isStopped: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return stopped
+    }
+
+    public func check() throws {
+        if isStopped || Task.isCancelled {
+            throw CancellationError()
+        }
+    }
+}
+
 public enum ScanEvent: Sendable {
     case progress(ScanProgress)
     /// A throttled look at the tree so far. Directories that are listed but not

@@ -59,8 +59,8 @@ struct RootView: View {
                 Spacer()
                 Button("Scan Home") { model.scanHome() }
                 Button("Choose Folder…") { model.chooseFolder() }
-                if model.phase == .scanning {
-                    Button("Cancel") { model.cancelScan() }
+                if model.phase == .scanning || model.mapScanning {
+                    Button("Cancel") { model.cancelWork() }
                 }
                 Button {
                     showSafety = true

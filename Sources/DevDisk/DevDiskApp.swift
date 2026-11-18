@@ -16,9 +16,9 @@ struct DevDiskApp: App {
                     .keyboardShortcut("h", modifiers: [.command, .shift])
                 Button("Choose Folder…") { model.chooseFolder() }
                     .keyboardShortcut("o")
-                Button("Cancel Scan") { model.cancelScan() }
+                Button("Cancel Scan") { model.cancelWork() }
                     .keyboardShortcut(".")
-                    .disabled(model.phase != .scanning)
+                    .disabled(model.phase != .scanning && !model.mapScanning)
             }
         }
     }

@@ -37,6 +37,7 @@ struct MacCleanupPerformer: CleanupPerforming {
     }
 
     func removePermanently(path: String) throws {
+        if isCancelled() { throw CancellationError() }
         // lstat, so a symlink is removed itself. fileExists follows the link and
         // would skip a dangling one, or report a target that is already gone.
         guard Self.inodeExists(path) else { return }

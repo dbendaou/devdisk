@@ -26,16 +26,20 @@ struct CleanupScreen: View {
                 Toggle("Move to Trash", isOn: $model.movesToTrash)
                     .help("Off deletes permanently. On moves the files to Trash instead.")
                 Spacer()
-                Text("\(model.filteredSuggestions.count) suggestions")
+                if !model.safeBatchSuggestions.isEmpty {
+                    Button(model.safeBatchTitle) { model.openSafeBatch() }
+                        .buttonStyle(.borderedProminent)
+                }
+                Text("\(model.displayedCount) suggestions")
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            if model.filteredSuggestions.isEmpty && model.phase == .scanning {
+            if model.displayedCount == 0 && model.phase == .scanning {
                 ContentUnavailableView("Scanning", systemImage: "sparkles", description: Text("Known caches show up here as soon as they are measured. You can delete a card while the scan continues."))
             } else if model.rootPath == nil {
                 ContentUnavailableView("No scan yet", systemImage: "sparkles", description: Text("Scan your home folder to find developer caches."))
-            } else if model.filteredSuggestions.isEmpty {
+            } else if model.displayedCount == 0 {
                 ContentUnavailableView(
                     "Nothing matched",
                     systemImage: "checkmark.circle",
@@ -44,7 +48,7 @@ struct CleanupScreen: View {
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 22) {
-                        ForEach(CleanupReport.groups(from: model.filteredSuggestions)) { group in
+                        ForEach(model.displayedGroups) { group in
                             VStack(alignment: .leading, spacing: 8) {
                                 HStack(alignment: .firstTextBaseline) {
                                     Text(group.ecosystem.title).font(.title3.weight(.semibold))
@@ -57,7 +61,16 @@ struct CleanupScreen: View {
                                         .foregroundStyle(.secondary)
                                 }
                                 ForEach(group.suggestions) { suggestion in
-                                    CleanupCard(model: model, suggestion: suggestion)
+                                    CleanupCard(
+                                        suggestion: suggestion,
+                                        display: model.display(for: suggestion.id),
+                                        progress: model.progressStore(for: suggestion.id),
+                                        previewOnly: model.previewOnly,
+                                        movesToTrash: model.movesToTrash,
+                                        onPreview: { model.ask(suggestion, dryRun: true) },
+                                        onRun: { model.ask(suggestion, dryRun: false) },
+                                        onCancel: { model.cancelRow(suggestion.id) }
+                                    )
                                 }
                             }
                         }
@@ -66,12 +79,21 @@ struct CleanupScreen: View {
                 }
             }
         }
+        .sheet(isPresented: $model.showingSafeBatch) {
+            SafeBatchSheet(model: model)
+        }
     }
 }
 
 private struct CleanupCard: View {
-    var model: AppModel
     var suggestion: CleanupSuggestion
+    var display: CardDisplay
+    var progress: CardProgress
+    var previewOnly: Bool
+    var movesToTrash: Bool
+    var onPreview: () -> Void
+    var onRun: () -> Void
+    var onCancel: () -> Void
     @State private var expanded = false
 
     var body: some View {
@@ -84,7 +106,7 @@ private struct CleanupCard: View {
                     Text(suggestion.headline)
                         .font(.headline)
                     Spacer()
-                    Text(suggestion.estimateIsUpperBound ? "Up to \(ByteFormat.string(suggestion.size))" : ByteFormat.string(suggestion.size))
+                    Text(display.sizeText)
                         .font(.title3.monospacedDigit().weight(.semibold))
                 }
                 HStack {
@@ -104,25 +126,15 @@ private struct CleanupCard: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Text(suggestion.actionDescription)
                     .font(.callout.monospaced())
-                if suggestion.items.contains(where: { $0.projectName != nil }) {
+                if !display.lines.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
-                        ForEach(suggestion.items.prefix(8), id: \.path) { item in
-                            HStack {
-                                Text(item.projectName ?? item.path)
-                                    .lineLimit(1)
-                                if let date = item.lastModified {
-                                    Text(date.formatted(date: .abbreviated, time: .omitted))
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Text(ByteFormat.string(item.bytes))
-                                    .font(.callout.monospacedDigit())
-                                    .foregroundStyle(.secondary)
-                            }
-                            .font(.callout)
+                        ForEach(display.lines, id: \.self) { line in
+                            Text(line)
+                                .font(.callout)
+                                .lineLimit(1)
                         }
-                        if suggestion.items.count > 8 {
-                            Text("\(suggestion.items.count - 8) more projects are listed in the confirmation.")
+                        if suggestion.items.count > display.lines.count {
+                            Text("\(suggestion.items.count - display.lines.count) more projects are listed in the confirmation.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -136,19 +148,14 @@ private struct CleanupCard: View {
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                         }
-                        if suggestion.paths.count > 40 {
-                            Text("\(suggestion.paths.count - 40) more paths are listed in the confirmation.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
                     }
                     .padding(.top, 4)
                 } label: {
-                    Text("\(suggestion.paths.count) \(suggestion.paths.count == 1 ? "path" : "paths")")
+                    Text(display.pathLabel)
                         .font(.caption)
                 }
                 HStack(spacing: 10) {
-                    if let activity = model.rowActivity[suggestion.id] {
+                    if let activity = progress.activity {
                         switch activity {
                         case .running:
                             ProgressView()
@@ -157,13 +164,10 @@ private struct CleanupCard: View {
                                 .font(.callout)
                                 .lineLimit(1)
                             Spacer()
-                            Button {
-                                model.cancelRow(suggestion.id)
-                            } label: {
+                            Button(action: onCancel) {
                                 Image(systemName: "xmark.circle.fill")
-                                    .foregroundStyle(.secondary)
                             }
-                            .buttonStyle(.borderless)
+                            .buttonStyle(.bordered)
                             .help("Stop. What is already removed stays removed.")
                         case .finished(_, let success, _):
                             Text(activity.caption)
@@ -189,20 +193,125 @@ private struct CleanupCard: View {
 
     @ViewBuilder
     private var actionButtons: some View {
-        Button("Preview") { model.ask(suggestion, dryRun: true) }
-        if !model.previewOnly {
-            Button(primaryTitle) { model.ask(suggestion, dryRun: false) }
+        Button("Preview", action: onPreview)
+        if !previewOnly {
+            Button(primaryTitle, action: onRun)
                 .buttonStyle(.borderedProminent)
         }
     }
 
     private var primaryTitle: String {
         switch suggestion.effect {
-        case .removePermanently: model.movesToTrash ? "Move to Trash" : "Delete"
+        case .removePermanently: movesToTrash ? "Move to Trash" : "Delete"
         case .moveToTrash: "Move to Trash"
         case .emptyTrash: "Empty Trash"
         case .command, .commandForEach: "Run command"
         }
+    }
+}
+
+private struct SafeBatchSheet: View {
+    @Bindable var model: AppModel
+    @State private var excluded: Set<String> = []
+
+    private var included: [CleanupSuggestion] {
+        model.safeBatchSuggestions.filter { !excluded.contains($0.id) }
+    }
+
+    private var includedBytes: UInt64 {
+        included.reduce(0) { $0 + $1.size }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            switch model.safeBatchStep {
+            case .choose:
+                Text(model.movesToTrash ? "Move all Safe to Trash?" : (model.previewOnly ? "Preview all Safe?" : "Delete all Safe?"))
+                    .font(.title3.weight(.semibold))
+                Text("Only Safe items. Review suggestions stay untouched. Uncheck anything you want to keep.")
+                    .foregroundStyle(.secondary)
+                Text(ByteFormat.string(includedBytes))
+                    .font(.title2.monospacedDigit().weight(.semibold))
+                Text("\(included.count) of \(model.safeBatchSuggestions.count)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(model.safeBatchSuggestions) { suggestion in
+                            Toggle(isOn: Binding(
+                                get: { !excluded.contains(suggestion.id) },
+                                set: { included in
+                                    if included { excluded.remove(suggestion.id) }
+                                    else { excluded.insert(suggestion.id) }
+                                }
+                            )) {
+                                HStack {
+                                    Text(suggestion.headline).lineLimit(1)
+                                    Spacer()
+                                    Text(ByteFormat.string(suggestion.size))
+                                        .font(.callout.monospacedDigit())
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+                .frame(minHeight: 220, maxHeight: 420)
+                HStack {
+                    Button("Cancel") { model.showingSafeBatch = false }
+                        .keyboardShortcut(.cancelAction)
+                    Spacer()
+                    Button(model.previewOnly ? "Preview" : "Confirm") {
+                        model.runSafeBatch(excluding: excluded)
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(included.isEmpty)
+                }
+            case .running:
+                Text(model.previewOnly ? "Previewing Safe items…" : "Deleting Safe items…")
+                    .font(.title3.weight(.semibold))
+                Text("Up to three at a time. Each card shows its own progress.")
+                    .foregroundStyle(.secondary)
+                ProgressView()
+                HStack {
+                    Spacer()
+                    Button("Cancel") { model.cancelSafeBatch() }
+                        .keyboardShortcut(.cancelAction)
+                }
+            case .summary:
+                Text("Safe cleanup finished")
+                    .font(.title3.weight(.semibold))
+                Text(model.previewOnly ? "Nothing was deleted." : "Freed \(ByteFormat.string(model.safeBatchFreed))")
+                    .font(.title2.monospacedDigit().weight(.semibold))
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(model.safeBatchLines) { line in
+                            HStack(alignment: .firstTextBaseline) {
+                                Image(systemName: line.success ? "checkmark.circle" : "exclamationmark.triangle")
+                                    .foregroundStyle(line.success ? DevDiskTheme.reclaim : Color.red)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(line.title).lineLimit(1)
+                                    Text(line.message)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                }
+                            }
+                        }
+                    }
+                }
+                .frame(minHeight: 180, maxHeight: 420)
+                HStack {
+                    Spacer()
+                    Button("Done") { model.showingSafeBatch = false }
+                        .keyboardShortcut(.defaultAction)
+                        .buttonStyle(.borderedProminent)
+                }
+            }
+        }
+        .padding(20)
+        .frame(width: 640)
     }
 }
 #endif
