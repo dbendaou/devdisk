@@ -327,6 +327,27 @@ struct CleanupTests {
         #expect(PathSafety.isProtected("/Users/dev/Pictures/Photos Library.photoslibrary/Photos.sqlite"))
         #expect(!PathSafety.isProtected("/Users/dev/Library/Caches/JetBrains"))
         #expect(!PathSafety.isProtected("/tmp/devdisk-job"))
+        #expect(PathSafety.isProtected("/var/db"))
+        #expect(PathSafety.isProtected("/private/var/db"))
+        #expect(Paths.normalize("/Users/dev/./Library/../Library/") == "/Users/dev/Library")
+        #expect(Paths.normalize("/../../etc") == "/etc")
+    }
+
+    /// macOS `URL.standardizedFileURL` resolves `/home` and `/var`. The scanner
+    /// must keep the path it was given, or an in-memory fixture keyed by that
+    /// path (and a caller who picked `/tmp/...`) looks up a different string.
+    @Test func normalizeDoesNotResolveSymlinks() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("devdisk-norm-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+        let target = root.appendingPathComponent("real-target", isDirectory: true)
+        try fm.createDirectory(at: target, withIntermediateDirectories: true)
+        let link = root.appendingPathComponent("link-name")
+        try fm.createSymbolicLink(at: link, withDestinationURL: target)
+        let normalized = Paths.normalize(link.path)
+        #expect(normalized.hasSuffix("/link-name"))
+        #expect(!normalized.contains("real-target"))
     }
 }
 

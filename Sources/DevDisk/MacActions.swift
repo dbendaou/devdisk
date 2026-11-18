@@ -1,5 +1,6 @@
 #if os(macOS)
 import AppKit
+import Darwin
 import Foundation
 import DevDiskCore
 
@@ -34,25 +35,35 @@ struct MacCleanupPerformer: CleanupPerforming {
     }
 
     func removePermanently(path: String) throws {
+        // lstat, so a symlink is removed itself. fileExists follows the link and
+        // would skip a dangling one, or report a target that is already gone.
+        guard Self.inodeExists(path) else { return }
         let source = URL(fileURLWithPath: path)
-        // A retry after a partial delete should continue with the paths that remain.
-        guard FileManager.default.fileExists(atPath: source.path) else { return }
-        let destination = FileManager.default.temporaryDirectory
-            .appendingPathComponent("DevDisk-\(UUID().uuidString)", isDirectory: true)
-        // Same-volume rename returns immediately so the scan no longer sees the path.
-        // The bytes are freed when the renamed copy is removed, still off the main thread.
+        let aside = source.deletingLastPathComponent()
+            .appendingPathComponent(".devdisk-deleting-\(UUID().uuidString)", isDirectory: true)
+        let fm = FileManager.default
         do {
-            try FileManager.default.moveItem(at: source, to: destination)
-            try FileManager.default.removeItem(at: destination)
+            // The aside sits in the same parent, so this is a rename on that volume.
+            // temporaryDirectory is often /var/folders on the system disk; moveItem
+            // across volumes copies the tree instead of returning EXDEV.
+            try fm.moveItem(at: source, to: aside)
         } catch {
-            if FileManager.default.fileExists(atPath: source.path) {
-                try FileManager.default.removeItem(at: source)
-            } else if FileManager.default.fileExists(atPath: destination.path) {
-                try FileManager.default.removeItem(at: destination)
-            } else {
-                throw error
+            if Self.inodeExists(path) {
+                try fm.removeItem(at: source)
+                return
             }
+            if Self.inodeExists(aside.path) {
+                try fm.removeItem(at: aside)
+                return
+            }
+            throw error
         }
+        try fm.removeItem(at: aside)
+    }
+
+    private static func inodeExists(_ path: String) -> Bool {
+        var info = stat()
+        return path.withCString { lstat($0, &info) } == 0
     }
 
     func run(executable: String, arguments: [String]) throws -> String {

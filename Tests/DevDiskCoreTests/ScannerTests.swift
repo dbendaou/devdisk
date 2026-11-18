@@ -26,6 +26,28 @@ struct ScannerTests {
         #expect(smallNode.allocatedSize >= UInt64(payload.count) || smallNode.allocatedSize == 4096)
     }
 
+    @Test func posixListingReportsSymlinksWithoutFollowingThem() async throws {
+        let root = try makeTemp()
+        defer { remove(root) }
+        let outside = try makeTemp()
+        defer { remove(outside) }
+        try Data(repeating: 3, count: 8_000).write(to: outside.appendingPathComponent("big.bin"))
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("dir"), withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: root.appendingPathComponent("file.txt"))
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("link.bin"),
+            withDestinationURL: outside.appendingPathComponent("big.bin")
+        )
+        let listed = try await POSIXFileSystem().listing(at: root.path)
+        let kinds = Dictionary(uniqueKeysWithValues: listed.map { ($0.name, $0.kind) })
+        #expect(kinds["dir"] == .directory)
+        #expect(kinds["file.txt"] == .file)
+        #expect(kinds["link.bin"] == .symlink)
+        let link = try await POSIXFileSystem().metadata(at: root.appendingPathComponent("link.bin").path)
+        #expect(link.isSymlink)
+        #expect(link.allocatedSize < 8_000)
+    }
+
     @Test func symlinksAreNotFollowed() async throws {
         let root = try makeTemp()
         defer { remove(root) }

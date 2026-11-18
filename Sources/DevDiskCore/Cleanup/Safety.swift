@@ -77,6 +77,9 @@ public enum PathSafety {
         "/Applications",
         "/private/etc",
         "/private/var",
+        // macOS symlinks `/var` to `/private/var`. Normalization does not resolve
+        // that link, so the unresolved spelling has to be refused too.
+        "/var",
     ]
 
     public static func isProtected(_ path: String) -> Bool {

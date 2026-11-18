@@ -70,7 +70,7 @@ The Explore map is a separate full walk. Use **Build map** when you want the tre
 - Database rules are Review and never Safe.
 - Every completed deletion is appended to the log.
 - Nothing outside the scanned folder is touched. The scan root itself is never deleted.
-- Refused even inside the scan: `/System`, `/usr`, `/bin`, `/sbin`, `/Library`, `/etc`, `/dev`, `/opt`, `/Applications`, `/private/etc`, `/private/var`, `~/Library/Keychains`, `~/Library/Mail`, and any Photos library (`.photoslibrary`).
+- Refused even inside the scan: `/System`, `/usr`, `/bin`, `/sbin`, `/Library`, `/etc`, `/dev`, `/opt`, `/Applications`, `/private/etc`, `/private/var`, `/var` (the macOS symlink to `/private/var`), `~/Library/Keychains`, `~/Library/Mail`, and any Photos library (`.photoslibrary`). Path checks do not resolve symlinks, so `/home` and `/tmp` stay the paths you named.
 - A folder is skipped if deleting it would take a protected descendant with it.
 - Tool commands are an allowlist of bare names (`brew`, `docker`, `podman`, `colima`, `xcrun`, `git`, …). The app does not invoke a shell. `git gc` is run once per repository with `git -C <repo>`.
 - Sizes are allocated bytes (`st_blocks * 512`), not logical size. Symlinks are not followed and the walk does not enter another volume. The Explore walk counts a hard link once, on the lexicographically first path. The cleanup size pass does not, so a rare hard-linked cache can be counted twice. Permission errors are recorded and those folders are not suggested.

@@ -145,7 +145,7 @@ final class AppModel {
         scanTask?.cancel()
         let generation = UUID()
         scanGeneration = generation
-        let path = root.standardizedFileURL.path
+        let path = Paths.normalize(root.path)
         let settings = CleanupScanSettings(staleAfterDays: staleAfterDays)
         let suppressed = CleanupSuppressions()
         let carried = removedPrefixes
