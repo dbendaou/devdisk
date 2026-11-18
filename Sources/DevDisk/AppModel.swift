@@ -68,12 +68,6 @@ struct SafeBatchLine: Identifiable, Equatable {
     var success: Bool
 }
 
-enum SafeBatchStep: Equatable {
-    case choose
-    case running
-    case summary
-}
-
 enum RowActivity: Equatable {
     case running(verb: String, freed: UInt64)
     case finished(message: String, success: Bool, hideFromEstimate: Bool)
@@ -153,7 +147,9 @@ final class AppModel {
     var safeBatchBytes: UInt64 = 0
     var safeBatchTitle = ""
     var showingSafeBatch = false
-    var safeBatchStep: SafeBatchStep = .choose
+    var showingBatchSummary = false
+    var batchSession = SafeBatchCoordinator()
+    var batchBannerText = ""
     var safeBatchLines: [SafeBatchLine] = []
     var safeBatchFreed: UInt64 = 0
     var mapScanning = false
@@ -164,6 +160,8 @@ final class AppModel {
     @ObservationIgnored private var cleanupStop = ScanStop()
     @ObservationIgnored private var mapStop = ScanStop()
     @ObservationIgnored private var batchStop: CancelFlag?
+    @ObservationIgnored private var batchTask: Task<Void, Never>?
+    @ObservationIgnored private var batchIDs: Set<String> = []
     @ObservationIgnored private var lastProgressUI = Date.distantPast
     @ObservationIgnored private var pendingProgress: ScanProgress?
     @ObservationIgnored private var progressFlush: Task<Void, Never>?
@@ -498,8 +496,8 @@ final class AppModel {
     }
 
     func openSafeBatch() {
-        guard !safeBatchSuggestions.isEmpty else { return }
-        safeBatchStep = .choose
+        guard !safeBatchSuggestions.isEmpty, !batchSession.running else { return }
+        batchSession.presentSheet()
         safeBatchLines = []
         safeBatchFreed = 0
         showingSafeBatch = true
@@ -507,46 +505,76 @@ final class AppModel {
 
     func runSafeBatch(excluding excluded: Set<String>) {
         let items = safeBatchSuggestions.filter { !excluded.contains($0.id) }
-        guard !items.isEmpty, let rootPath else { return }
-        safeBatchStep = .running
+        // The confirmation sheet must be gone before any deletion starts.
+        showingSafeBatch = false
+        guard batchSession.begin(count: items.count), let rootPath else { return }
         safeBatchLines = []
         safeBatchFreed = 0
+        batchIDs = Set(items.map(\.id))
         let shared = CancelFlag()
         batchStop = shared
         let dryRun = previewOnly
         let trashInstead = movesToTrash
         let root = rootPath
-        Task {
-            var index = 0
-            var running: [Task<Void, Never>] = []
-            while index < items.count || !running.isEmpty {
-                if shared.isCancelled && running.isEmpty { break }
-                while running.count < 3, index < items.count, !shared.isCancelled {
-                    let suggestion = items[index]
-                    index += 1
-                    let flag = CancelFlag()
-                    self.cancelFlags[suggestion.id] = flag
-                    running.append(Task {
-                        await self.runRemoval(
-                            suggestion,
-                            dryRun: dryRun,
-                            trashInstead: trashInstead,
-                            rootPath: root,
-                            flag: flag,
-                            sharedStop: shared
-                        )
-                    })
-                }
-                if running.isEmpty { break }
-                await running.removeFirst().value
+        batchTask = Task { @MainActor in
+            _ = await BatchPump.run(items: items, limit: 3, isCancelled: { shared.isCancelled }) { suggestion in
+                let flag = CancelFlag()
+                self.cancelFlags[suggestion.id] = flag
+                await self.runRemoval(
+                    suggestion,
+                    dryRun: dryRun,
+                    trashInstead: trashInstead,
+                    rootPath: root,
+                    flag: flag,
+                    sharedStop: shared
+                )
             }
-            self.batchStop = nil
-            self.safeBatchStep = .summary
+            self.finishSafeBatch(dryRun: dryRun)
+        }
+    }
+
+    func batchProgressLabel() -> String {
+        let verb = previewOnly ? "Previewing Safe" : (movesToTrash ? "Moving Safe" : "Deleting Safe")
+        let freed = batchFreedNow()
+        return "\(verb) · \(batchSession.completed)/\(batchSession.total) · \(ByteFormat.string(freed)) freed"
+    }
+
+    private func batchFreedNow() -> UInt64 {
+        var total = safeBatchFreed
+        for id in batchIDs {
+            if case .running(_, let freed) = cardProgress[id]?.activity {
+                total += freed
+            }
+        }
+        return total
+    }
+
+    private func finishSafeBatch(dryRun: Bool) {
+        batchSession.finish()
+        batchStop = nil
+        batchTask = nil
+        let count = batchSession.completed
+        let failed = batchSession.failed
+        if dryRun {
+            batchBannerText = "Previewed \(count) items" + (failed == 0 ? "" : " · \(failed) failed")
+        } else {
+            let failedText = failed == 0 ? "" : " · \(failed) failed"
+            batchBannerText = "Freed \(ByteFormat.string(safeBatchFreed)) from \(count) items\(failedText)"
         }
     }
 
     func cancelSafeBatch() {
         batchStop?.cancel()
+    }
+
+    func showBatchSummary() {
+        guard !safeBatchLines.isEmpty || batchSession.bannerVisible else { return }
+        showingBatchSummary = true
+    }
+
+    func dismissBatchBanner() {
+        batchSession.dismissBanner()
+        showingBatchSummary = false
     }
 
     private func runRemoval(
@@ -608,11 +636,12 @@ final class AppModel {
             bytes: record.bytesFreed,
             logRecord: record
         )
-        if showingSafeBatch {
+        if batchIDs.contains(suggestion.id) {
             safeBatchLines.append(SafeBatchLine(id: suggestion.id, title: suggestion.headline, message: message, success: record.succeeded))
             if record.succeeded && !record.dryRun {
                 safeBatchFreed += record.bytesFreed
             }
+            batchSession.record(success: record.succeeded, bytes: record.succeeded && !record.dryRun ? record.bytesFreed : 0)
         }
     }
 

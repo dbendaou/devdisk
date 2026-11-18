@@ -336,6 +336,32 @@ struct CleanupTests {
         #expect(record.message.contains("stays removed"))
     }
 
+    @Test func confirmingASafeBatchClearsTheSheetBeforeWork() {
+        var batch = SafeBatchCoordinator()
+        batch.presentSheet()
+        #expect(batch.sheetPresented)
+        #expect(!batch.workMayStart)
+        let ready = batch.begin(count: 38)
+        #expect(ready)
+        #expect(!batch.sheetPresented)
+        #expect(batch.running)
+        #expect(batch.workMayStart)
+        #expect(batch.total == 38)
+    }
+
+    @Test @MainActor func cancellingASafeBatchSkipsItemsThatHaveNotStarted() async {
+        let stop = ScanStop()
+        let outcome = await BatchPump.run(
+            items: ["a", "b", "c", "d"],
+            limit: 1,
+            isCancelled: { stop.isStopped }
+        ) { id in
+            if id == "a" { stop.stop() }
+        }
+        #expect(outcome.started == ["a"])
+        #expect(outcome.skipped == ["b", "c", "d"])
+    }
+
     @Test func cancellingInsideADirectoryLeavesTheRestInPlace() async throws {
         let root = "/proj/DerivedData"
         let fs = MapFileSystem(nodes: [

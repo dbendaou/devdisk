@@ -26,15 +26,15 @@ struct CleanupScreen: View {
                 Toggle("Move to Trash", isOn: $model.movesToTrash)
                     .help("Off deletes permanently. On moves the files to Trash instead.")
                 Spacer()
-                if !model.safeBatchSuggestions.isEmpty {
-                    Button(model.safeBatchTitle) { model.openSafeBatch() }
-                        .buttonStyle(.borderedProminent)
-                }
+                SafeBatchControl(model: model)
                 Text("\(model.displayedCount) suggestions")
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
+            if model.batchSession.bannerVisible {
+                SafeBatchBanner(model: model)
+            }
             if model.displayedCount == 0 && model.phase == .scanning {
                 ContentUnavailableView("Scanning", systemImage: "sparkles", description: Text("Known caches show up here as soon as they are measured. You can delete a card while the scan continues."))
             } else if model.rootPath == nil {
@@ -81,6 +81,9 @@ struct CleanupScreen: View {
         }
         .sheet(isPresented: $model.showingSafeBatch) {
             SafeBatchSheet(model: model)
+        }
+        .sheet(isPresented: $model.showingBatchSummary) {
+            SafeBatchSummarySheet(model: model)
         }
     }
 }
@@ -210,6 +213,96 @@ private struct CleanupCard: View {
     }
 }
 
+private struct SafeBatchControl: View {
+    var model: AppModel
+
+    var body: some View {
+        if model.batchSession.running {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text(model.batchProgressLabel())
+                    .font(.callout)
+                    .lineLimit(1)
+                Button {
+                    model.cancelSafeBatch()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.borderless)
+                .help("Stop the remaining Safe items")
+            }
+        } else if !model.safeBatchSuggestions.isEmpty {
+            Button(model.safeBatchTitle) { model.openSafeBatch() }
+                .buttonStyle(.borderedProminent)
+        }
+    }
+}
+
+private struct SafeBatchBanner: View {
+    var model: AppModel
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "checkmark.circle")
+                .foregroundStyle(DevDiskTheme.reclaim)
+            Text(model.batchBannerText)
+                .font(.callout)
+                .lineLimit(2)
+            Spacer()
+            Button("Details") { model.showBatchSummary() }
+            Button {
+                model.dismissBatchBanner()
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(DevDiskTheme.reclaim.opacity(0.12))
+    }
+}
+
+private struct SafeBatchSummarySheet: View {
+    var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Safe cleanup finished")
+                .font(.title3.weight(.semibold))
+            Text(model.batchBannerText)
+                .font(.title3.monospacedDigit().weight(.semibold))
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    ForEach(model.safeBatchLines) { line in
+                        HStack(alignment: .firstTextBaseline) {
+                            Image(systemName: line.success ? "checkmark.circle" : "exclamationmark.triangle")
+                                .foregroundStyle(line.success ? DevDiskTheme.reclaim : Color.red)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(line.title).lineLimit(1)
+                                Text(line.message)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                        }
+                    }
+                }
+            }
+            .frame(minHeight: 180, maxHeight: 420)
+            HStack {
+                Spacer()
+                Button("Done") { model.showingBatchSummary = false }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(20)
+        .frame(width: 640)
+    }
+}
+
 private struct SafeBatchSheet: View {
     @Bindable var model: AppModel
     @State private var excluded: Set<String> = []
@@ -224,8 +317,6 @@ private struct SafeBatchSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            switch model.safeBatchStep {
-            case .choose:
                 Text(model.movesToTrash ? "Move all Safe to Trash?" : (model.previewOnly ? "Preview all Safe?" : "Delete all Safe?"))
                     .font(.title3.weight(.semibold))
                 Text("Only Safe items. Review suggestions stay untouched. Uncheck anything you want to keep.")
@@ -268,47 +359,6 @@ private struct SafeBatchSheet: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(included.isEmpty)
                 }
-            case .running:
-                Text(model.previewOnly ? "Previewing Safe items…" : "Deleting Safe items…")
-                    .font(.title3.weight(.semibold))
-                Text("Up to three at a time. Each card shows its own progress.")
-                    .foregroundStyle(.secondary)
-                ProgressView()
-                HStack {
-                    Spacer()
-                    Button("Cancel") { model.cancelSafeBatch() }
-                        .keyboardShortcut(.cancelAction)
-                }
-            case .summary:
-                Text("Safe cleanup finished")
-                    .font(.title3.weight(.semibold))
-                Text(model.previewOnly ? "Nothing was deleted." : "Freed \(ByteFormat.string(model.safeBatchFreed))")
-                    .font(.title2.monospacedDigit().weight(.semibold))
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(model.safeBatchLines) { line in
-                            HStack(alignment: .firstTextBaseline) {
-                                Image(systemName: line.success ? "checkmark.circle" : "exclamationmark.triangle")
-                                    .foregroundStyle(line.success ? DevDiskTheme.reclaim : Color.red)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(line.title).lineLimit(1)
-                                    Text(line.message)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(2)
-                                }
-                            }
-                        }
-                    }
-                }
-                .frame(minHeight: 180, maxHeight: 420)
-                HStack {
-                    Spacer()
-                    Button("Done") { model.showingSafeBatch = false }
-                        .keyboardShortcut(.defaultAction)
-                        .buttonStyle(.borderedProminent)
-                }
-            }
         }
         .padding(20)
         .frame(width: 640)
