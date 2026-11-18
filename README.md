@@ -12,6 +12,8 @@ Requires Apple Silicon and macOS 14 or later (the same deployment target as `Pac
 
 ## Screens
 
+![DevDisk Smart cleanup, deleting two virtualenvs while the scan keeps running](docs/screenshot.png)
+
 **Smart cleanup** opens first after a scan. A stepper, “Projects untouched for N+ days” (default 30), filters per-project folders such as `node_modules`, `.next`, `target`, and `.venv`. Global caches are always listed. Suggestions are grouped by ecosystem (JavaScript, Apple, Editors, Python, Rust, Go, Java & Android, Ruby, Containers, Databases, Tools). A card shows the headline, the safety level, what the folder is, the action, and, for project folders, the project name, last-modified date, and size. Preview records what would happen. The real button opens a confirmation sheet that lists every path and the total size. Confirming closes the sheet immediately. The card then shows **Deleting…** or **Running…**, the bytes freed so far, and an X that stops the task. What was already removed stays removed. When it finishes the card reads **Freed 5.7 GB** or the error. Other cards, the scan, and further deletes keep working.
 
 **Explore** is a Map / Files / Kinds switch. Opening it starts a full walk beside cleanup. The map, file list, and kind totals update about once a second as directories are measured. A folder that is listed but not measured yet is a placeholder. The map is a squarified treemap coloured by file kind. Click a block to select it; click a selected folder to zoom in, or a selected file to reveal it in Finder. Files is an outline sorted by size, name, kind, or date, with the same Reveal action. Kinds is the extension and kind breakdown.
