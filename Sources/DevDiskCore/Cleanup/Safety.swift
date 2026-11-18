@@ -79,19 +79,34 @@ public enum PathSafety {
         "/private/var",
         // macOS symlinks `/var` to `/private/var`. Normalization does not resolve
         // that link, so the unresolved spelling has to be refused too.
+        // `/var/folders` is the per-user temporary area (FileManager.temporaryDirectory
+        // is `/var/folders/…/T`). It is exempt below; `/var` and `/var/db` are not.
         "/var",
     ]
 
+    /// Per-user scratch space. macOS puts `NSTemporaryDirectory` here, so a scan
+    /// or a test fixture rooted under it is the user's data, not the system tree.
+    private static let perUserTemporaryPrefixes = ["/var/folders", "/private/var/folders"]
+
     public static func isProtected(_ path: String) -> Bool {
         let path = Paths.normalize(path)
-        for prefix in systemPrefixes where path == prefix || path.hasPrefix(prefix + "/") {
-            return true
+        if !isPerUserTemporary(path) {
+            for prefix in systemPrefixes where path == prefix || path.hasPrefix(prefix + "/") {
+                return true
+            }
         }
         let parts = Paths.components(path)
         if parts.contains(where: { $0.hasSuffix(".photoslibrary") }) { return true }
         if Paths.hasConsecutive(path, ["Library", "Keychains"]) { return true }
         if Paths.hasConsecutive(path, ["Library", "Mail"]) { return true }
         if parts.contains("com.apple.mail") || parts.contains("com.apple.photos") || parts.contains("com.apple.Photos") {
+            return true
+        }
+        return false
+    }
+
+    private static func isPerUserTemporary(_ path: String) -> Bool {
+        for prefix in perUserTemporaryPrefixes where path == prefix || path.hasPrefix(prefix + "/") {
             return true
         }
         return false

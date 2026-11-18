@@ -327,10 +327,61 @@ struct CleanupTests {
         #expect(PathSafety.isProtected("/Users/dev/Pictures/Photos Library.photoslibrary/Photos.sqlite"))
         #expect(!PathSafety.isProtected("/Users/dev/Library/Caches/JetBrains"))
         #expect(!PathSafety.isProtected("/tmp/devdisk-job"))
+        #expect(PathSafety.isProtected("/var"))
         #expect(PathSafety.isProtected("/var/db"))
+        #expect(PathSafety.isProtected("/var/folders-extra"))
+        #expect(PathSafety.isProtected("/private/var"))
         #expect(PathSafety.isProtected("/private/var/db"))
+        #expect(!PathSafety.isProtected("/var/folders"))
+        #expect(!PathSafety.isProtected("/var/folders/d1/hash/T/devdisk-fixture"))
+        #expect(!PathSafety.isProtected("/private/var/folders/d1/hash/T/devdisk-fixture"))
+        #expect(!PathSafety.isProtected("/Users/ada"))
+        #expect(!PathSafety.isProtected("/Users/ada/Library/Caches/JetBrains"))
         #expect(Paths.normalize("/Users/dev/./Library/../Library/") == "/Users/dev/Library")
         #expect(Paths.normalize("/../../etc") == "/etc")
+    }
+
+    /// macOS temp directories live under `/var/folders/…/T`. That must not be treated
+    /// as the system `/var` tree, and a lexical `/Users/<name>` home must still match
+    /// the catalogue.
+    @Test func homeAndPerUserTempAreNotSystemFolders() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let old = now.addingTimeInterval(-90 * 86_400)
+        let tempRoot = "/var/folders/d1/hash/T/devdisk-fixture"
+        let temp = directory("devdisk-fixture", tempRoot, [
+            directory(".npm", "\(tempRoot)/.npm", [file("cache.bin", "\(tempRoot)/.npm", 2_000)]),
+        ])
+        let tempReport = CleanupEngine().evaluate(root: temp, now: now, byteFloor: 1, staleAfterDays: 30)
+        #expect(tempReport.suggestions.contains { $0.ruleID == "npm-cache" })
+
+        let homePath = "/Users/ada"
+        let home = directory("ada", homePath, [
+            directory(".npm", "\(homePath)/.npm", [file("cache.bin", "\(homePath)/.npm", 2_000)]),
+            directory("Library", "\(homePath)/Library", [
+                directory("Caches", "\(homePath)/Library/Caches", [
+                    directory("JetBrains", "\(homePath)/Library/Caches/JetBrains", [
+                        file("blob", "\(homePath)/Library/Caches/JetBrains", 3_000),
+                    ]),
+                ]),
+                directory("Keychains", "\(homePath)/Library/Keychains", [
+                    file("login.keychain-db", "\(homePath)/Library/Keychains", 4_000),
+                ]),
+            ]),
+            directory("Projects", "\(homePath)/Projects", [
+                directory("app", "\(homePath)/Projects/app", [
+                    file("package.json", "\(homePath)/Projects/app", 20),
+                    directory("node_modules", "\(homePath)/Projects/app/node_modules", [
+                        file("index.js", "\(homePath)/Projects/app/node_modules", 5_000),
+                    ]),
+                ], modified: old),
+            ]),
+        ])
+        let homeReport = CleanupEngine().evaluate(root: home, now: now, byteFloor: 1, staleAfterDays: 30)
+        let ids = Set(homeReport.suggestions.map(\.ruleID))
+        #expect(ids.contains("npm-cache"))
+        #expect(ids.contains("cache-jetbrains"))
+        #expect(ids.contains("node-modules"))
+        #expect(!homeReport.suggestions.flatMap(\.paths).contains { $0.contains("Keychains") })
     }
 
     /// macOS `URL.standardizedFileURL` resolves `/home` and `/var`. The scanner

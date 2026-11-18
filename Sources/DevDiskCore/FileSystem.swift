@@ -83,6 +83,15 @@ public protocol FileSystemProbe: Sendable {
 
 /// POSIX `lstat` / `readdir` reader. Allocated size is `st_blocks * 512`.
 /// Symlinks are not followed. Each call opens its own directory stream.
+///
+/// Darwin and Glibc disagree on a few names. This file is the only libc user
+/// in the library (no `rename`, `unlink`, `rmdir`, or `fts`):
+/// - `opendir` returns `UnsafeMutablePointer<DIR>` on Darwin and `OpaquePointer` on Glibc.
+/// - `dirent.d_name` is 1024 bytes on Darwin and 256 on Glibc.
+/// - `DT_*` is `Int32` on Darwin and `Int` on Glibc. `d_type` is `UInt8` on both.
+/// - mtime is `st_mtimespec` on Darwin and `st_mtim` on Glibc.
+/// - `st_blocks` is `Int64` on Darwin and `Int` on Glibc; both count 512-byte units.
+/// Deletion on macOS goes through `FileManager`, not these calls.
 public struct POSIXFileSystem: FileSystemProbe {
     public init() {}
 
@@ -109,28 +118,27 @@ public struct POSIXFileSystem: FileSystemProbe {
         if result != 0 {
             throw mapErrno(code, path: path)
         }
-        let mode = info.st_mode
-        let kind = mode & S_IFMT
+        let kind = info.st_mode & S_IFMT
         let isLink = kind == S_IFLNK
         let isDir = kind == S_IFDIR
-        let blocks = info.st_blocks
-        let allocated: UInt64 = blocks > 0 ? UInt64(blocks) * 512 : 0
-        let logical: UInt64 = info.st_size > 0 ? UInt64(info.st_size) : 0
+        let blocks = nonNegative(info.st_blocks)
         return EntryMetadata(
             isDirectory: isDir,
             isSymlink: isLink,
-            allocatedSize: allocated,
-            logicalSize: logical,
-            device: UInt64(info.st_dev),
-            inode: UInt64(info.st_ino),
-            linkCount: UInt64(info.st_nlink),
+            allocatedSize: blocks * 512,
+            logicalSize: nonNegative(info.st_size),
+            device: nonNegative(info.st_dev),
+            inode: nonNegative(info.st_ino),
+            linkCount: nonNegative(info.st_nlink),
             modified: modifiedDate(info)
         )
     }
 
+    /// `opendir`'s pointer type is not shared. The closure's return type is
+    /// inferred so Darwin's `UnsafeMutablePointer<DIR>` and Glibc's `OpaquePointer` both fit.
     private static func readListing(_ path: String) throws -> [ListedEntry] {
         var openError: Int32 = 0
-        let dir = path.withCString { pointer -> OpaquePointer? in
+        let dir = path.withCString { pointer in
             let opened = opendir(pointer)
             if opened == nil { openError = errno }
             return opened
@@ -147,7 +155,6 @@ public struct POSIXFileSystem: FileSystemProbe {
             }
             let name = entryName(entry)
             if name == "." || name == ".." { continue }
-            // d_type is UInt8 on both Darwin and Glibc. DT_* is Int32 on Darwin and Int on Glibc.
             entries.append(ListedEntry(name: name, kind: kind(of: entry.pointee.d_type)))
         }
         entries.sort { $0.name < $1.name }
@@ -182,6 +189,12 @@ public struct POSIXFileSystem: FileSystemProbe {
         let nanos = info.st_mtim.tv_nsec
         #endif
         return Date(timeIntervalSince1970: TimeInterval(seconds) + TimeInterval(nanos) / 1_000_000_000)
+    }
+
+    /// Signed on Darwin (`Int32`/`Int64`) and sometimes unsigned on Glibc (`UInt64`).
+    private static func nonNegative<T: BinaryInteger>(_ value: T) -> UInt64 {
+        guard value > 0 else { return 0 }
+        return UInt64(value)
     }
 
     private static func mapErrno(_ code: Int32, path: String) -> FileSystemError {
