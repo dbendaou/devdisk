@@ -6,6 +6,9 @@ CONFIG := release
 
 test:
 	$(SWIFT) test
+	@if [ "$$(uname)" = "Darwin" ]; then \
+		$(SWIFT) build --product DevDisk; \
+	fi
 
 build:
 	$(SWIFT) build

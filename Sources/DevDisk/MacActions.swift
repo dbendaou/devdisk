@@ -56,7 +56,9 @@ struct MacCleanupPerformer: CleanupPerforming {
         process.standardOutput = pipe
         process.standardError = pipe
         try process.run()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        // readToEnd drains the pipe until the process closes it, so a large
+        // brew or docker report cannot fill the pipe and stall waitUntilExit.
+        let data = try pipe.fileHandleForReading.readToEnd() ?? Data()
         process.waitUntilExit()
         let text = String(data: data, encoding: .utf8) ?? ""
         if process.terminationStatus != 0 {

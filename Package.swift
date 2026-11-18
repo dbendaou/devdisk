@@ -41,6 +41,11 @@ let targets: [Target] = [
 
 let package = Package(
     name: "DevDisk",
+    // SwiftPM otherwise defaults this package to macOS 12, which rejects
+    // Observation (@Observable, @Bindable). Linux ignores Apple platforms.
+    platforms: [
+        .macOS(.v14),
+    ],
     products: products,
     targets: targets
 )
